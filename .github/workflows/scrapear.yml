@@ -3,7 +3,10 @@ name: Scrapear
 # Corre solo y va acumulando la base en el repo. Con la compu apagada.
 on:
   schedule:
-    - cron: '0 3 * * *'      # 03:00 UTC = medianoche en Argentina
+    # Dos veces por dia: 00:00 y 12:00 hora Argentina. Con repo publico los
+    # minutos son ilimitados, asi que el limite lo pone no golpear a Google
+    # demasiado seguido desde el mismo rango de IPs, no la cuota.
+    - cron: '0 3,15 * * *'
   workflow_dispatch:
     inputs:
       minutos:

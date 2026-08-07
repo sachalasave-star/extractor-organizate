@@ -38,6 +38,7 @@ def cargar_busquedas(ruta='config/busquedas.xlsx'):
     df = pd.read_excel(ruta)
     c_nicho, c_busq = _col(df, 'nicho'), _col(df, 'busqueda')
     c_ciudad, c_activo = _col(df, 'ciudad', 'zona'), _col(df, 'activo')
+    c_rubro = _col(df, 'rubro', 'categoria')
     if not c_nicho or not c_busq:
         raise ValueError(f"Faltan columnas Nicho/Busqueda en {ruta}. Hay: {df.columns.tolist()}")
 
@@ -50,6 +51,7 @@ def cargar_busquedas(ruta='config/busquedas.xlsx'):
         busqueda = str(f[c_busq]).strip()
         filas.append({
             'nicho': str(f[c_nicho]).strip(),
+            'rubro': str(f[c_rubro]).strip() if c_rubro and pd.notna(f[c_rubro]) else "",
             'busqueda': busqueda,
             'ciudad': ciudad,
             'termino': f"{busqueda} en {ciudad}" if ciudad else busqueda,
@@ -105,7 +107,8 @@ def ejecutar_scraper(solo=None, reanudar=True, minutos_max=0):
                                                 ya_tengo=db.completos(con))
 
                     if negocios:
-                        nuevos = db.guardar(con, negocios, b['nicho'], b['ciudad'], b['termino'])
+                        nuevos = db.guardar(con, negocios, b['nicho'], b['ciudad'],
+                                            b['termino'], b['rubro'])
                         db.marcar_hecha(con, clave)
                         print(f"   +{nuevos} nuevos ({len(negocios) - nuevos} repetidos) | total {db.total(con)}")
                     else:

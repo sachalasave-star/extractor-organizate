@@ -6,7 +6,7 @@ from datetime import datetime
 RUTA = "output/negocios.db"
 
 CAMPOS = ['place_id', 'nombre', 'telefono', 'categoria', 'direccion', 'web',
-          'rating', 'resenas', 'ciudad', 'nicho', 'busqueda', 'url', 'fecha']
+          'rating', 'resenas', 'ciudad', 'rubro', 'nicho', 'busqueda', 'url', 'fecha']
 
 
 def conectar(ruta=RUTA):
@@ -16,7 +16,10 @@ def conectar(ruta=RUTA):
     con.execute("""CREATE TABLE IF NOT EXISTS negocios (
         place_id TEXT PRIMARY KEY, nombre TEXT, telefono TEXT, categoria TEXT,
         direccion TEXT, web TEXT, rating TEXT, resenas TEXT, ciudad TEXT,
-        nicho TEXT, busqueda TEXT, url TEXT, fecha TEXT)""")
+        rubro TEXT, nicho TEXT, busqueda TEXT, url TEXT, fecha TEXT)""")
+    # Columna agregada despues: las bases viejas no la tienen.
+    if 'rubro' not in [c[1] for c in con.execute('PRAGMA table_info(negocios)')]:
+        con.execute("ALTER TABLE negocios ADD COLUMN rubro TEXT DEFAULT ''")
     con.execute("CREATE TABLE IF NOT EXISTS busquedas_hechas (clave TEXT PRIMARY KEY, fecha TEXT)")
     con.commit()
     return con
@@ -34,13 +37,13 @@ def place_id(url, nombre="", direccion=""):
     return f"{nombre}|{direccion}".lower().strip()
 
 
-def guardar(con, negocios, nicho, ciudad, busqueda):
+def guardar(con, negocios, nicho, ciudad, busqueda, rubro=''):
     """Devuelve cuantos eran nuevos (los repetidos se ignoran)."""
     ahora = datetime.now().isoformat(timespec='seconds')
     filas = [(place_id(n.get('url', ''), n.get('nombre', ''), n.get('direccion', '')),
               n.get('nombre', ''), n.get('telefono', ''), n.get('categoria', ''),
               n.get('direccion', ''), n.get('web', ''), n.get('rating', ''),
-              n.get('resenas', ''), ciudad, nicho, busqueda, n.get('url', ''), ahora)
+              n.get('resenas', ''), ciudad, rubro, nicho, busqueda, n.get('url', ''), ahora)
              for n in negocios]
     antes = con.execute("SELECT COUNT(*) FROM negocios").fetchone()[0]
     # Si ya existe, no lo pisa: solo rellena los campos que estaban vacios. Asi una
