@@ -64,10 +64,14 @@ def _nueva_pagina(p, headless):
     return browser, page
 
 
-def ejecutar_scraper(solo=None, reanudar=True):
+def ejecutar_scraper(solo=None, reanudar=True, minutos_max=0):
+    """minutos_max > 0 corta limpio al llegar al limite. En GitHub Actions es
+    obligatorio: si el job se mata por timeout, el commit final nunca ocurre y
+    se pierde el trabajo de toda la corrida."""
     cfg = _config()
     max_res = int(cfg.get('max_resultados_por_busqueda', 10000))
     headless = bool(cfg.get('headless', False))
+    limite = time.monotonic() + minutos_max * 60 if minutos_max else None
 
     busquedas = cargar_busquedas()
     if solo:
@@ -83,6 +87,11 @@ def ejecutar_scraper(solo=None, reanudar=True):
         browser, page = _nueva_pagina(p, headless)
         try:
             for i, b in enumerate(busquedas, 1):
+                if limite and time.monotonic() > limite:
+                    print(f"\nLimite de {minutos_max} min alcanzado. Corte limpio "
+                          f"en {i - 1}/{len(busquedas)}; el resto queda para la proxima.")
+                    break
+
                 clave = f"{b['nicho']}|{b['termino']}"
                 if reanudar and db.ya_hecha(con, clave):
                     print(f"[{i}/{len(busquedas)}] {b['termino']} - ya hecha, salteando")
@@ -127,4 +136,11 @@ def ejecutar_scraper(solo=None, reanudar=True):
 
 
 if __name__ == "__main__":
-    ejecutar_scraper()
+    import argparse
+    ap = argparse.ArgumentParser(description="Scraper de Google Maps")
+    ap.add_argument('--minutos', type=int, default=0,
+                    help="cortar limpio despues de N minutos (0 = sin limite)")
+    ap.add_argument('--solo', type=int, default=None,
+                    help="procesar solo las primeras N busquedas")
+    args = ap.parse_args()
+    ejecutar_scraper(solo=args.solo, minutos_max=args.minutos)

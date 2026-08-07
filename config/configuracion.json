@@ -1,6 +1,6 @@
 {
     "pais": "Argentina",
-    "headless": false,
+    "headless": true,
     "max_resultados_por_busqueda": 10000,
     "guardar_rating": true,
     "guardar_reviews": true,

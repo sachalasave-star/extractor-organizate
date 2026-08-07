@@ -1,0 +1,52 @@
+name: Scrapear
+
+# Corre solo y va acumulando la base en el repo. Con la compu apagada.
+on:
+  schedule:
+    - cron: '0 3 * * *'      # 03:00 UTC = medianoche en Argentina
+  workflow_dispatch:
+    inputs:
+      minutos:
+        description: 'Minutos a correr (max 300)'
+        default: '300'
+
+concurrency:                  # dos corridas a la vez pelearian por negocios.db
+  group: scrapear
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # para commitear la base de vuelta
+
+jobs:
+  scrapear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350       # el scraper corta a los 300: deja margen para el commit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+
+      - name: Scrapear
+        run: python -u scraper.py --minutos ${{ inputs.minutos || 300 }}
+
+      - name: Guardar resultados en el repo
+        if: always()           # aunque el scraper falle, lo que junto se guarda
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/negocios.db output/Organizate.xlsx
+          if git diff --staged --quiet; then
+            echo "Sin novedades."
+          else
+            CON_TEL=$(python -c "import sqlite3;print(sqlite3.connect('output/negocios.db').execute(\"SELECT COUNT(*) FROM negocios WHERE telefono!=''\").fetchone()[0])")
+            HECHAS=$(python -c "import sqlite3;print(sqlite3.connect('output/negocios.db').execute('SELECT COUNT(*) FROM busquedas_hechas').fetchone()[0])")
+            git commit -m "Scraping: $CON_TEL negocios con telefono, $HECHAS busquedas hechas"
+            git pull --rebase --autostash || true
+            git push
+          fi
