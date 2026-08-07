@@ -6,6 +6,8 @@ idioma ni de las clases ofuscadas de Google.
 """
 from playwright.sync_api import Page
 
+from modules.db import place_id
+
 TARJETA = 'div[role="article"]'
 
 
@@ -46,9 +48,12 @@ def _leer_ficha(panel):
     return telefono, direccion, web, categoria
 
 
-def extraer_negocios(page: Page, max_negocios=0) -> list:
+def extraer_negocios(page: Page, max_negocios=0, ya_tengo=frozenset()) -> list:
+    """`ya_tengo`: place_ids que ya estan completos en la base. Se saltean sin
+    abrir la ficha, que es lo caro (~3s c/u). Con varias keywords por nicho el
+    solapamiento es alto, asi que esto es la diferencia entre horas y horas."""
     negocios = []
-    sin_telefono = 0
+    sin_telefono = salteados = 0
 
     try:
         page.wait_for_selector(TARJETA, timeout=10000)
@@ -72,6 +77,11 @@ def extraer_negocios(page: Page, max_negocios=0) -> list:
             nombre = _attr(enlace, 'aria-label')
             url = _attr(enlace, 'href')
             if not nombre:
+                continue
+
+            # Ya lo tenemos completo: no vale la pena abrir la ficha de nuevo
+            if place_id(url, nombre) in ya_tengo:
+                salteados += 1
                 continue
 
             tarjeta = page.locator(TARJETA).nth(i)
@@ -117,5 +127,7 @@ def extraer_negocios(page: Page, max_negocios=0) -> list:
         print(f"   AVISO: 0 telefonos en {len(negocios)} negocios. Revisar selectores de la ficha.")
     elif sin_telefono:
         print(f"   {sin_telefono}/{len(negocios)} sin telefono.")
+    if salteados:
+        print(f"   {salteados} ya estaban en la base (no se abrieron).")
     print(f"   Extraidos {len(negocios)} negocios.")
     return negocios

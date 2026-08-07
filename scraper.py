@@ -92,7 +92,8 @@ def ejecutar_scraper(solo=None, reanudar=True):
                 try:
                     buscar_en_maps(page, b['termino'])
                     hacer_scroll(page, max_res)
-                    negocios = extraer_negocios(page, max_negocios=max_res)
+                    negocios = extraer_negocios(page, max_negocios=max_res,
+                                                ya_tengo=db.completos(con))
 
                     if negocios:
                         nuevos = db.guardar(con, negocios, b['nicho'], b['ciudad'], b['termino'])

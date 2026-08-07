@@ -67,3 +67,9 @@ def marcar_hecha(con, clave):
 
 def total(con):
     return con.execute("SELECT COUNT(*) FROM negocios").fetchone()[0]
+
+
+def completos(con):
+    """place_ids que ya tienen telefono: no hace falta volver a abrir su ficha.
+    Los que quedaron sin telefono se reintentan, por si fue un fallo puntual."""
+    return {r[0] for r in con.execute("SELECT place_id FROM negocios WHERE telefono != ''")}
