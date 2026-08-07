@@ -1,0 +1,12 @@
+{
+    "pais": "Argentina",
+    "headless": false,
+    "max_resultados_por_busqueda": 10000,
+    "guardar_rating": true,
+    "guardar_reviews": true,
+    "guardar_web": true,
+    "guardar_direccion": true,
+    "guardar_horarios": false,
+    "eliminar_duplicados": true,
+    "idioma": "es"
+}

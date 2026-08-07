@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Backup de la corrida vieja con los datos corruptos
+output/Organizate_anterior_CORRUPTO.xlsx
+output/_test.db
+output/*.png
+
+# La base (negocios.db) y el Excel SI se versionan a proposito:
+# es lo que permite que Actions acumule resultados entre corridas.
+
+.claude/

@@ -1,0 +1,32 @@
+name: Probar si Google Maps responde desde la nube
+
+# Prueba de humo antes de automatizar nada: corre UNA busqueda y falla ruidoso
+# si Google bloquea la IP del runner (que es de datacenter y suele estar marcada).
+on:
+  workflow_dispatch:
+
+jobs:
+  probar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+
+      - name: Correr la verificacion
+        run: python verificar.py
+
+      - name: Guardar captura de lo que vio el navegador
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captura-navegador
+          path: output/*.png
+          if-no-files-found: warn
