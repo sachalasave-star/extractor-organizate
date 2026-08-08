@@ -38,6 +38,13 @@ jobs:
       - name: Scrapear
         run: python -u scraper.py --minutos ${{ inputs.minutos || 300 }}
 
+      - name: Mandar los negocios nuevos a Google Sheets
+        if: always()          # el script se saltea solo si todavia no hay secrets
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python sincronizar_sheets.py
+
       - name: Guardar resultados en el repo
         if: always()           # aunque el scraper falle, lo que junto se guarda
         run: |

@@ -16,3 +16,6 @@ output/*.png
 # El Excel de los vendedores: tiene su trabajo adentro, no lo toca el scraper
 output/Seguimiento.xlsx
 output/Seguimiento_backup_*.xlsx
+
+# Credenciales de Google: NUNCA al repo
+credenciales.json
