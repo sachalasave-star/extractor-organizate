@@ -7,9 +7,9 @@ vendedor es escribir en una celda y no tocar 43 validaciones.
 
 # Columnas de la hoja de cada nicho, en orden. Las 5 primeras son las que se
 # usan llamando; el resto es contexto que se mira solo cuando hace falta.
-COLUMNAS = ['Negocio', 'Teléfono', 'Categoría', 'Vendedor', 'Estado',
+COLUMNAS = ['Negocio', 'Teléfono', 'Categoría', 'Vendedor', 'Estado', 'Motivo',
             'Observaciones', 'Última gestión', 'Ciudad', 'Link en Maps']
-ANCHOS = [280, 120, 170, 110, 130, 440, 110, 130, 90]
+ANCHOS = [270, 120, 160, 110, 130, 170, 400, 115, 125, 90]
 
 # De donde sale cada columna en el Excel generado. '' = la llena el vendedor.
 ORIGEN = {'Negocio': 'Negocio', 'Teléfono': 'Teléfono', 'Categoría': 'Categoría',
@@ -31,12 +31,20 @@ ESTADOS = [
 NOMBRES_ESTADO = [e[0] for e in ESTADOS]
 SIN_CONTACTAR = NOMBRES_ESTADO[0]
 
+# Por que un lead no avanzo. Sirve para saber si el problema es el pitch, el
+# precio o la lista: "numero equivocado" es un dato del scraper, "precio alto"
+# es un dato del negocio.
+MOTIVOS = ['No atiende', 'Número equivocado', 'Precio alto', 'Ya tiene sistema',
+           'Pidió que llame después', 'No es el rubro', 'Cerró']
+
 CONFIG = '⚙️ Config'
-RANKING = '📊 Ranking'
+PANEL = '📊 Panel de ventas'
+RESUMEN = '📁 Resumen por nicho'
 
 # Filas de Config donde viven las listas (1-based, como las ve el usuario)
 FILA_VENDEDORES = 3          # A3 hacia abajo
 FILA_ESTADOS = 3             # C3 hacia abajo
+FILA_MOTIVOS = 3             # E3 hacia abajo
 
 
 def col_letra(i):
@@ -47,6 +55,8 @@ def col_letra(i):
 IDX = {c: i for i, c in enumerate(COLUMNAS)}
 COL_VENDEDOR = col_letra(IDX['Vendedor'])
 COL_ESTADO = col_letra(IDX['Estado'])
+COL_MOTIVO = col_letra(IDX['Motivo'])
+COL_FECHA = col_letra(IDX['Última gestión'])
 COL_TELEFONO = col_letra(IDX[CLAVE])
 
 

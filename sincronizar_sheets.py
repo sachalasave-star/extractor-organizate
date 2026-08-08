@@ -19,7 +19,7 @@ import sys
 
 import pandas as pd
 
-from modules.planilla import COLUMNAS, CLAVE, CONFIG, RANKING, IDX, fila_desde
+from modules.planilla import COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, IDX, fila_desde
 
 GENERADO = "output/Organizate.xlsx"
 
@@ -68,7 +68,7 @@ def sincronizar(generado=GENERADO):
     df = df[df[CLAVE].str.strip() != ""]
 
     libro = _abrir_libro()
-    hojas = {h.title: h for h in libro.worksheets() if h.title not in (CONFIG, RANKING)}
+    hojas = {h.title: h for h in libro.worksheets() if h.title not in (CONFIG, PANEL, RESUMEN)}
 
     # Solo la columna del telefono: traer las hojas enteras seria lentisimo y
     # ademas arriesga leer datos a medio escribir por un vendedor.
