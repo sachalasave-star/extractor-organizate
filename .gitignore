@@ -12,3 +12,7 @@ output/*.png
 # es lo que permite que Actions acumule resultados entre corridas.
 
 .claude/
+
+# El Excel de los vendedores: tiene su trabajo adentro, no lo toca el scraper
+output/Seguimiento.xlsx
+output/Seguimiento_backup_*.xlsx

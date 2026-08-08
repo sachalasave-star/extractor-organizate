@@ -34,9 +34,29 @@ El término que se busca es `"{Busqueda} en {Ciudad}"`. Poné `No` en Activo par
 - **`output/negocios.db`** — la base maestra (SQLite). Es la fuente de verdad.
 - **`output/Organizate.xlsx`** — export, una hoja por nicho. Se **regenera entero**
   en cada corrida: si lo editás a mano, se pierde.
+- **`output/Seguimiento.xlsx`** — donde trabajan los vendedores. **El scraper nunca
+  lo toca.** No se versiona en git.
 
 Al Excel solo van los negocios **con teléfono**. Los que no tienen quedan en la base:
 si en una pasada posterior aparece el número, entran solos.
+
+## Para vender: el Excel de seguimiento
+
+Los vendedores no trabajan sobre `Organizate.xlsx` — ese se pisa entero en cada
+corrida y se perderían las anotaciones. Trabajan sobre `Seguimiento.xlsx`, y para
+traer los negocios nuevos:
+
+```bash
+git pull            # baja lo que scrapeó la nube
+python actualizar.py
+```
+
+`actualizar.py` **solo agrega filas al final**. Las que ya estaban no se tocan ni se
+reordenan, así que Estado, Vendedor y Notas sobreviven. Hace una copia de seguridad
+antes de escribir, y se adapta a las columnas que tenga el archivo: si le agregás
+una, se respeta y queda vacía en las filas nuevas.
+
+Comprobalo con `python actualizar.py --test`.
 
 ## Cómo está armado
 
