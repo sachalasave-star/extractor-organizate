@@ -17,9 +17,14 @@ from modules.planilla import (COLUMNAS, ANCHOS, CLAVE, VENDEDORES, ESTADOS,
                               NOMBRES_ESTADO, CONFIG, RANKING, FILA_VENDEDORES,
                               FILA_ESTADOS, COL_VENDEDOR, COL_ESTADO, COL_TELEFONO,
                               IDX, fila_desde)
+from modules.estilo import (FUENTE, FUENTE_DATOS, TAM_ENCABEZADO, TAM_DATOS,
+                            color_rubro, hex_a_rgb, TINTA, TINTA_SUAVE, LINEA, BLANCO)
 from sincronizar_sheets import _credenciales, GENERADO
 
-MAX_VENDEDORES = 40          # margen para sumar vendedores sin rehacer nada
+MAX_VENDEDORES = 40      # margen del desplegable, no cuesta nada
+# Filas del ranking. Cada una son 6 formulas x 43 hojas: con 40 la planilla se
+# arrastra, con 12 hay margen de sobra sobre los 4 vendedores actuales.
+FILAS_RANKING = 12
 
 
 def _abrir_libro():
@@ -51,21 +56,79 @@ def reintentar(fn, *a, **kw):
             time.sleep(espera)
 
 
-def _formato_hoja(sid, filas):
+def _formato_hoja(sid, filas, rubro=''):
     """Requests de formato para una hoja de nicho."""
     ultima = max(filas + 1, 2000)        # deja margen para que crezca sola
+    oscuro, claro = color_rubro(rubro)
     reqs = [
-        # Encabezado
+        # Encabezado, con el color del rubro
         {"repeatCell": {
             "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": _rgb((0.12, 0.24, 0.42)),
-                "textFormat": {"bold": True, "foregroundColor": _rgb((1, 1, 1)), "fontSize": 11},
-                "verticalAlignment": "MIDDLE"}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}},
+                "backgroundColor": _rgb(hex_a_rgb(oscuro)),
+                "textFormat": {"bold": True, "foregroundColor": _rgb(hex_a_rgb(BLANCO)),
+                               "fontSize": TAM_ENCABEZADO, "fontFamily": FUENTE},
+                "verticalAlignment": "MIDDLE",
+                "horizontalAlignment": "LEFT",
+                "padding": {"left": 10, "right": 10}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,"
+                      "horizontalAlignment,padding)"}},
+        # Cuerpo: una sola tipografia, texto tranquilo
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": ultima},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"fontFamily": FUENTE_DATOS, "fontSize": TAM_DATOS,
+                               "foregroundColor": _rgb(hex_a_rgb(TINTA))},
+                "verticalAlignment": "MIDDLE",
+                "padding": {"left": 10, "right": 10}}},
+            "fields": "userEnteredFormat(textFormat,verticalAlignment,padding)"}},
+        # Filas alternadas en el tono claro del rubro: guia el ojo en listas largas
+        {"addBanding": {"bandedRange": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": ultima,
+                      "startColumnIndex": 0, "endColumnIndex": len(COLUMNAS)},
+            "rowProperties": {
+                "headerColor": _rgb(hex_a_rgb(oscuro)),
+                "firstBandColor": _rgb(hex_a_rgb(BLANCO)),
+                "secondBandColor": _rgb(hex_a_rgb(claro))}}}},
         {"updateSheetProperties": {
-            "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
-            "fields": "gridProperties.frozenRowCount"}},
+            "properties": {"sheetId": sid, "tabColor": _rgb(hex_a_rgb(oscuro)),
+                           "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 1}},
+            "fields": "tabColor,gridProperties(frozenRowCount,frozenColumnCount)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 34}, "fields": "pixelSize"}},
+        # El nombre del negocio en seminegrita: es lo primero que se lee
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": ultima,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+            "fields": "userEnteredFormat.textFormat.bold"}},
+        # Telefono monoespaciado: se leen en columna, uno abajo del otro
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": ultima,
+                      "startColumnIndex": IDX[CLAVE], "endColumnIndex": IDX[CLAVE] + 1},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"fontFamily": "Roboto Mono", "fontSize": TAM_DATOS}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        # Categoria y ciudad son contexto, no protagonistas
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": ultima,
+                      "startColumnIndex": IDX['Categoría'], "endColumnIndex": IDX['Categoría'] + 1},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            "fields": "userEnteredFormat.textFormat.foregroundColor"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": ultima,
+                      "startColumnIndex": IDX['Ciudad'], "endColumnIndex": IDX['Ciudad'] + 1},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            "fields": "userEnteredFormat.textFormat.foregroundColor"}},
+        # Estado y vendedor centrados: son etiquetas, no texto
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": ultima,
+                      "startColumnIndex": IDX['Vendedor'], "endColumnIndex": IDX['Estado'] + 1},
+            "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat.horizontalAlignment"}},
         # El telefono como texto: sin esto Sheets se come el 0 inicial
         {"repeatCell": {
             "range": {"sheetId": sid, "startRowIndex": 1,
@@ -120,11 +183,61 @@ def _hoja_config(libro):
         pass
     h = libro.add_worksheet(title=CONFIG, rows=60, cols=6, index=0)
     filas = [["VENDEDORES", "", "ESTADOS", ""],
-             ["(agregá o borrá acá: se actualiza en todas las hojas)", "", "(no tocar el texto)", ""]]
+             ["Agregá o borrá acá: se actualiza en las 43 hojas", "",
+              "No cambies el texto: los colores dependen de él", ""]]
     for i in range(max(len(VENDEDORES), len(ESTADOS))):
         filas.append([VENDEDORES[i] if i < len(VENDEDORES) else "", "",
                       NOMBRES_ESTADO[i] if i < len(ESTADOS) else "", ""])
     h.update(values=filas, range_name="A1")
+
+    azul = hex_a_rgb('#1D4E89')
+    reqs = [
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(azul),
+                "textFormat": {"bold": True, "fontSize": 11, "fontFamily": FUENTE,
+                               "foregroundColor": _rgb(hex_a_rgb(BLANCO))},
+                "verticalAlignment": "MIDDLE", "padding": {"left": 10}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,padding)"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 1, "endRowIndex": 2},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "italic": True, "fontSize": 9, "fontFamily": FUENTE,
+                "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 2, "endRowIndex": 50},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"fontFamily": FUENTE, "fontSize": TAM_DATOS},
+                "verticalAlignment": "MIDDLE", "padding": {"left": 10}}},
+            "fields": "userEnteredFormat(textFormat,verticalAlignment,padding)"}},
+        {"updateSheetProperties": {
+            "properties": {"sheetId": h.id, "tabColor": _rgb(azul),
+                           "gridProperties": {"frozenRowCount": 2}},
+            "fields": "tabColor,gridProperties.frozenRowCount"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 300}, "fields": "pixelSize"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
+            "properties": {"pixelSize": 30}, "fields": "pixelSize"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": 3},
+            "properties": {"pixelSize": 300}, "fields": "pixelSize"}},
+    ]
+    # Cada estado con su color, para que se vea la escala de una
+    for i, (estado, fondo, texto) in enumerate(ESTADOS):
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": FILA_ESTADOS - 1 + i,
+                      "endRowIndex": FILA_ESTADOS + i,
+                      "startColumnIndex": 2, "endColumnIndex": 3},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(fondo),
+                "textFormat": {"bold": True, "fontFamily": FUENTE,
+                               "foregroundColor": _rgb(texto)}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"}})
+    reintentar(libro.batch_update, {"requests": reqs})
     return h
 
 
@@ -135,28 +248,39 @@ def _hoja_ranking(libro, nichos):
         pass
     h = libro.add_worksheet(title=RANKING, rows=60, cols=10, index=1)
 
-    # SUMPRODUCT sobre INDIRECT recorre las 43 hojas sin escribir 43 formulas.
-    hojas = "{" + ";".join(f'"{n}"' for n in nichos) + "}"
-
+    # Una suma explicita por hoja. Da largo, pero INDIRECT sobre un array no
+    # sirve: Sheets lo evalua solo con el primer elemento y el total daba el
+    # de la primera hoja (818 = Academias) en vez de los 7391.
     def contar(col, condicion):
-        return (f'=SUMPRODUCT(COUNTIF(INDIRECT("\'"&{hojas}&"\'!{col}2:{col}"),{condicion}))')
+        return "=" + "+".join(
+            f"COUNTIF('{n}'!{col}2:{col},{condicion})" for n in nichos)
+
+    def contar_por(fila, estado=None):
+        """Cuenta lo del vendedor de esa fila, opcionalmente filtrando estado."""
+        partes = []
+        for n in nichos:
+            if estado:
+                partes.append(f"COUNTIFS('{n}'!{COL_VENDEDOR}2:{COL_VENDEDOR},$A{fila},"
+                              f"'{n}'!{COL_ESTADO}2:{COL_ESTADO},\"{estado}\")")
+            else:
+                partes.append(f"COUNTIF('{n}'!{COL_VENDEDOR}2:{COL_VENDEDOR},$A{fila})")
+        return f'=IF($A{fila}="","",' + "+".join(partes) + ")"
 
     filas = [["RANKING DE VENDEDORES", "", "", "", "", ""],
              ["Se actualiza solo. Contá desde acá quién movió el embudo.", "", "", "", "", ""],
              ["Vendedor", "Clientes activos", "Demos", "Interesados", "Asignados", "Sin contactar"]]
-    for i in range(len(VENDEDORES)):
+    for i in range(FILAS_RANKING):
         f = 4 + i
-        v = f"'{CONFIG}'!A{FILA_VENDEDORES + i}"
         filas.append([
-            f"={v}",
-            f'=IF($A{f}="","",SUMPRODUCT(COUNTIFS(INDIRECT("\'"&{hojas}&"\'!{COL_VENDEDOR}2:{COL_VENDEDOR}"),$A{f},INDIRECT("\'"&{hojas}&"\'!{COL_ESTADO}2:{COL_ESTADO}"),"Cliente activo")))',
-            f'=IF($A{f}="","",SUMPRODUCT(COUNTIFS(INDIRECT("\'"&{hojas}&"\'!{COL_VENDEDOR}2:{COL_VENDEDOR}"),$A{f},INDIRECT("\'"&{hojas}&"\'!{COL_ESTADO}2:{COL_ESTADO}"),"Demo iniciada")))',
-            f'=IF($A{f}="","",SUMPRODUCT(COUNTIFS(INDIRECT("\'"&{hojas}&"\'!{COL_VENDEDOR}2:{COL_VENDEDOR}"),$A{f},INDIRECT("\'"&{hojas}&"\'!{COL_ESTADO}2:{COL_ESTADO}"),"Le interesó")))',
-            f'=IF($A{f}="","",SUMPRODUCT(COUNTIF(INDIRECT("\'"&{hojas}&"\'!{COL_VENDEDOR}2:{COL_VENDEDOR}"),$A{f})))',
-            f'=IF($A{f}="","",SUMPRODUCT(COUNTIFS(INDIRECT("\'"&{hojas}&"\'!{COL_VENDEDOR}2:{COL_VENDEDOR}"),$A{f},INDIRECT("\'"&{hojas}&"\'!{COL_ESTADO}2:{COL_ESTADO}"),"Sin contactar")))',
+            f"=IFERROR('{CONFIG}'!A{FILA_VENDEDORES + i},\"\")",
+            contar_por(f, "Cliente activo"),
+            contar_por(f, "Demo iniciada"),
+            contar_por(f, "Le interesó"),
+            contar_por(f),
+            contar_por(f, "Sin contactar"),
         ])
 
-    f0 = 4 + len(VENDEDORES) + 1
+    f0 = 3 + FILAS_RANKING + 1
     filas.append([""] * 6)
     filas.append(["ESTADO GENERAL DE LA BASE", "", "", "", "", ""])
     filas.append(["Total negocios", contar(COL_TELEFONO, '"<>"'), "", "", "", ""])
@@ -164,28 +288,97 @@ def _hoja_ranking(libro, nichos):
         filas.append([estado, contar(COL_ESTADO, f'"{estado}"'), "", "", "", ""])
 
     h.update(values=filas, range_name="A1", value_input_option="USER_ENTERED")
-    libro.batch_update({"requests": [
+
+    azul, azul_claro = hex_a_rgb('#1D4E89'), hex_a_rgb('#EAF0F8')
+    fin_vend = 3 + len(VENDEDORES)
+    reintentar(libro.batch_update, {"requests": [
+        # Todo con la misma tipografia de base
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": 60},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"fontFamily": FUENTE, "fontSize": TAM_DATOS,
+                               "foregroundColor": _rgb(hex_a_rgb(TINTA))},
+                "verticalAlignment": "MIDDLE", "padding": {"left": 10}}},
+            "fields": "userEnteredFormat(textFormat,verticalAlignment,padding)"}},
+        # Titulo
         {"repeatCell": {
             "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": 1},
-            "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 14}}},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "bold": True, "fontSize": 16, "fontFamily": FUENTE,
+                "foregroundColor": _rgb(azul)}}},
             "fields": "userEnteredFormat.textFormat"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 42}, "fields": "pixelSize"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 1, "endRowIndex": 2},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "italic": True, "fontSize": 9, "fontFamily": FUENTE,
+                "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        # Encabezado de la tabla de vendedores
         {"repeatCell": {
             "range": {"sheetId": h.id, "startRowIndex": 2, "endRowIndex": 3},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": _rgb((0.12, 0.24, 0.42)),
-                "textFormat": {"bold": True, "foregroundColor": _rgb((1, 1, 1))}}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
+                "backgroundColor": _rgb(azul),
+                "textFormat": {"bold": True, "fontFamily": FUENTE, "fontSize": TAM_ENCABEZADO,
+                               "foregroundColor": _rgb(hex_a_rgb(BLANCO))},
+                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,"
+                      "verticalAlignment)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "ROWS", "startIndex": 2, "endIndex": 3},
+            "properties": {"pixelSize": 32}, "fields": "pixelSize"}},
+        # Numeros centrados y en seminegrita: son la metrica, que se lean rapido
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 3, "endRowIndex": fin_vend,
+                      "startColumnIndex": 1, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontSize": 11, "fontFamily": FUENTE}}},
+            "fields": "userEnteredFormat(horizontalAlignment,textFormat)"}},
+        {"addBanding": {"bandedRange": {
+            "range": {"sheetId": h.id, "startRowIndex": 2, "endRowIndex": fin_vend,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "rowProperties": {"headerColor": _rgb(azul),
+                              "firstBandColor": _rgb(hex_a_rgb(BLANCO)),
+                              "secondBandColor": _rgb(azul_claro)}}}},
+        # Bloque de estado general
         {"repeatCell": {
             "range": {"sheetId": h.id, "startRowIndex": f0, "endRowIndex": f0 + 1},
-            "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 12}}},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "bold": True, "fontSize": 12, "fontFamily": FUENTE,
+                "foregroundColor": _rgb(azul)}}},
             "fields": "userEnteredFormat.textFormat"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": f0 + 1, "endRowIndex": f0 + 9,
+                      "startColumnIndex": 1, "endColumnIndex": 2},
+            "cell": {"userEnteredFormat": {
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontFamily": FUENTE}}},
+            "fields": "userEnteredFormat(horizontalAlignment,textFormat)"}},
+        {"updateSheetProperties": {
+            "properties": {"sheetId": h.id, "tabColor": _rgb(azul),
+                           "gridProperties": {"frozenRowCount": 3}},
+            "fields": "tabColor,gridProperties.frozenRowCount"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 220}, "fields": "pixelSize"}},
+            "properties": {"pixelSize": 230}, "fields": "pixelSize"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 6},
-            "properties": {"pixelSize": 130}, "fields": "pixelSize"}},
+            "properties": {"pixelSize": 135}, "fields": "pixelSize"}},
     ]})
+    # Los estados del resumen, cada uno con su color
+    reintentar(libro.batch_update, {"requests": [
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": f0 + 2 + i, "endRowIndex": f0 + 3 + i,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(fondo),
+                "textFormat": {"bold": True, "fontFamily": FUENTE,
+                               "foregroundColor": _rgb(texto)}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"}}
+        for i, (estado, fondo, texto) in enumerate(ESTADOS)]})
 
 
 def armar(generado=GENERADO):
@@ -229,9 +422,23 @@ def armar(generado=GENERADO):
         "data": [{"range": f"'{t}'!A1", "values": f} for t, f in datos.items()]})
     print(f"   {sum(len(f) - 1 for f in datos.values())} filas escritas en {len(datos)} hojas")
 
+    # Banding y reglas condicionales se acumulan al rehacer: hay que sacar las
+    # viejas o Google rechaza las nuevas por superponerse.
+    meta = reintentar(libro.fetch_sheet_metadata)
+    limpieza = []
+    for h in meta.get('sheets', []):
+        for b in h.get('bandedRanges', []):
+            limpieza.append({"deleteBanding": {"bandedRangeId": b['bandedRangeId']}})
+        sid = h['properties']['sheetId']
+        for i in range(len(h.get('conditionalFormats', [])) - 1, -1, -1):
+            limpieza.append({"deleteConditionalFormatRule": {"sheetId": sid, "index": i}})
+    for i in range(0, len(limpieza), 150):
+        reintentar(libro.batch_update, {"requests": limpieza[i:i + 150]})
+
+    rubro_de = dict(zip(df['Nicho'], df['Rubro']))
     reqs_formato = []
     for titulo, filas in datos.items():
-        reqs_formato += _formato_hoja(hojas[titulo].id, len(filas))
+        reqs_formato += _formato_hoja(hojas[titulo].id, len(filas), rubro_de.get(titulo, ''))
     for i in range(0, len(reqs_formato), 150):
         reintentar(libro.batch_update, {"requests": reqs_formato[i:i + 150]})
     print("   formato, desplegables y colores aplicados")
