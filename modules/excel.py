@@ -13,14 +13,16 @@ from openpyxl.utils import get_column_letter
 
 from modules.clasificador import clasificar
 
-COLUMNAS = ['nombre', 'telefono', 'categoria', 'ciudad', 'direccion',
-            'web', 'rating', 'resenas', 'url']
+# Orden pensado para llamar: primero a quien llamas y a que numero, despues
+# donde esta y que tan grande es. La web se saca: no aporta para el contacto.
+COLUMNAS = ['nombre', 'telefono', 'ciudad', 'direccion',
+            'rating', 'resenas', 'categoria', 'url']
 TITULOS = {'rubro': 'Rubro', 'nicho': 'Nicho', 'nombre': 'Negocio',
            'telefono': 'Teléfono', 'categoria': 'Rubro en Maps', 'ciudad': 'Ciudad',
-           'direccion': 'Dirección', 'web': 'Web', 'rating': 'Puntaje',
+           'direccion': 'Dirección', 'rating': 'Puntaje',
            'resenas': 'Reseñas', 'url': 'Link en Maps', 'motivo': 'Motivo del descarte'}
 ANCHOS = {'rubro': 20, 'nicho': 22, 'nombre': 42, 'telefono': 16, 'categoria': 26,
-          'ciudad': 18, 'direccion': 44, 'web': 34, 'rating': 8, 'resenas': 9,
+          'ciudad': 18, 'direccion': 44, 'rating': 8, 'resenas': 9,
           'url': 14, 'motivo': 40}
 
 
@@ -36,6 +38,24 @@ def _nombre_hoja(texto, usados):
 
 def _rubro_de(nicho, mapa):
     return mapa.get(nicho, 'Otros servicios')
+
+
+# Algunos negocios publican el numero sin codigo de area ("4450405"), que no se
+# puede discar desde otra ciudad. Se completa con el de la ciudad donde esta.
+AREA = {'Rosario': '0341', 'Buenos Aires': '011', 'Córdoba': '0351',
+        'Mendoza': '0261', 'La Plata': '0221', 'Mar del Plata': '0223',
+        'San Miguel de Tucumán': '0381', 'Salta': '0387', 'Santa Fe': '0342',
+        'Neuquén': '0299', 'Bahía Blanca': '0291', 'Paraná': '0343'}
+
+
+def _completar_tel(telefono, ciudad):
+    t = re.sub(r'\D', '', str(telefono or ''))
+    if not t or t.startswith('0'):
+        return telefono
+    if len(set(t)) <= 2 or len(t) < 6:      # 11111111, 0000, basura
+        return ''
+    area = AREA.get(ciudad)
+    return f"{area}{t}" if area and len(t) <= 8 else telefono
 
 
 def exportar(con, archivo_salida="output/Organizate.xlsx",
@@ -59,6 +79,9 @@ def exportar(con, archivo_salida="output/Organizate.xlsx",
         lambda f: clasificar(f['categoria'], f['nicho'], f['nombre']), axis=1)
     df['nicho'] = [d[0] for d in decidido]
     df['motivo'] = [d[1] for d in decidido]
+
+    df['telefono'] = [_completar_tel(t, c) for t, c in zip(df['telefono'], df['ciudad'])]
+    df = df[df['telefono'] != '']
 
     descartados = df[df['nicho'].isna()].copy()
     df = df[df['nicho'].notna()].copy()
