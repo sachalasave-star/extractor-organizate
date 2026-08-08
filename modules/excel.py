@@ -49,6 +49,11 @@ AREA = {'Rosario': '0341', 'Buenos Aires': '011', 'Córdoba': '0351',
 
 
 def _completar_tel(telefono, ciudad):
+    # Con gl=AR un negocio argentino da formato local (0341...). Un prefijo
+    # internacional significa que Maps devolvio otro pais: hubo 91 de Córdoba,
+    # España. No sirven como lead argentino.
+    if str(telefono or '').startswith('+'):
+        return ''
     t = re.sub(r'\D', '', str(telefono or ''))
     if not t or t.startswith('0'):
         return telefono

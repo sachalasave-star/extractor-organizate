@@ -54,7 +54,9 @@ def cargar_busquedas(ruta='config/busquedas.xlsx'):
             'rubro': str(f[c_rubro]).strip() if c_rubro and pd.notna(f[c_rubro]) else "",
             'busqueda': busqueda,
             'ciudad': ciudad,
-            'termino': f"{busqueda} en {ciudad}" if ciudad else busqueda,
+            # ", Argentina" ancla el pais: sin eso "en Córdoba" devolvia negocios
+            # de Cordoba, España (91 casos con telefono +34).
+            'termino': f"{busqueda} en {ciudad}, Argentina" if ciudad else busqueda,
         })
     return filas
 
