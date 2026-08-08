@@ -1,4 +1,9 @@
-"""Regenera el xlsx completo desde SQLite. Una hoja por rubro + una con todo."""
+"""Regenera el xlsx completo desde SQLite.
+
+Una hoja por nicho, mas "Todos" para filtrar y "Descartados" para auditar lo que
+el clasificador saco. El nicho de cada hoja lo decide la categoria real de Maps
+(ver clasificador.py), no la busqueda que encontro al negocio.
+"""
 import os
 import re
 import pandas as pd
@@ -6,18 +11,21 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-COLUMNAS = ['nicho', 'nombre', 'telefono', 'categoria', 'ciudad', 'direccion',
-            'web', 'rating', 'resenas', 'busqueda', 'url']
-TITULOS = {'rubro': 'Rubro', 'nicho': 'Nicho', 'nombre': 'Negocio', 'telefono': 'Teléfono',
-           'categoria': 'Rubro en Maps', 'ciudad': 'Ciudad', 'direccion': 'Dirección',
-           'web': 'Web', 'rating': 'Puntaje', 'resenas': 'Reseñas',
-           'busqueda': 'Búsqueda', 'url': 'Link en Maps'}
-ANCHOS = {'nicho': 22, 'nombre': 42, 'telefono': 16, 'categoria': 24, 'ciudad': 18,
-          'direccion': 44, 'web': 34, 'rating': 8, 'resenas': 9, 'busqueda': 26, 'url': 16}
+from modules.clasificador import clasificar
+
+COLUMNAS = ['nombre', 'telefono', 'categoria', 'ciudad', 'direccion',
+            'web', 'rating', 'resenas', 'url']
+TITULOS = {'rubro': 'Rubro', 'nicho': 'Nicho', 'nombre': 'Negocio',
+           'telefono': 'Teléfono', 'categoria': 'Rubro en Maps', 'ciudad': 'Ciudad',
+           'direccion': 'Dirección', 'web': 'Web', 'rating': 'Puntaje',
+           'resenas': 'Reseñas', 'url': 'Link en Maps', 'motivo': 'Motivo del descarte'}
+ANCHOS = {'rubro': 20, 'nicho': 22, 'nombre': 42, 'telefono': 16, 'categoria': 26,
+          'ciudad': 18, 'direccion': 44, 'web': 34, 'rating': 8, 'resenas': 9,
+          'url': 14, 'motivo': 40}
 
 
 def _nombre_hoja(texto, usados):
-    hoja = re.sub(r'[\[\]:*?/\\]', '-', str(texto)).strip()[:31] or "Sin rubro"
+    hoja = re.sub(r'[\[\]:*?/\\]', '-', str(texto)).strip()[:31] or "Sin nicho"
     base, n = hoja, 2
     while hoja in usados:
         hoja = f"{base[:28]}_{n}"
@@ -26,39 +34,75 @@ def _nombre_hoja(texto, usados):
     return hoja
 
 
-def exportar(con, archivo_salida="output/Organizate.xlsx"):
-    """Solo exporta negocios CON telefono. Los que no tienen quedan igual en la
-    base: si en una pasada posterior aparece el numero, el upsert lo rellena y
-    entran solos al Excel. Descartarlos de la base seria irreversible."""
-    cols = ','.join(COLUMNAS)
-    todo = pd.read_sql_query(
-        f"SELECT rubro,{cols} FROM negocios WHERE telefono != '' "
-        "ORDER BY rubro, nicho, ciudad, nombre", con)
-    if todo.empty:
+def _rubro_de(nicho, mapa):
+    return mapa.get(nicho, 'Otros servicios')
+
+
+def exportar(con, archivo_salida="output/Organizate.xlsx",
+             ruta_busquedas="config/busquedas.xlsx"):
+    """Solo exporta negocios CON telefono. Los que no tienen quedan en la base:
+    si en una pasada posterior aparece el numero, entran solos."""
+    df = pd.read_sql_query(
+        "SELECT nombre, telefono, categoria, ciudad, direccion, web, rating, "
+        "resenas, url, nicho FROM negocios WHERE telefono != ''", con)
+    if df.empty:
         print("No hay negocios con telefono para exportar.")
         return
+
+    try:
+        b = pd.read_excel(ruta_busquedas)[['Nicho', 'Rubro']].drop_duplicates()
+        mapa_rubro = dict(zip(b['Nicho'], b['Rubro']))
+    except Exception:
+        mapa_rubro = {}
+
+    decidido = df.apply(
+        lambda f: clasificar(f['categoria'], f['nicho'], f['nombre']), axis=1)
+    df['nicho'] = [d[0] for d in decidido]
+    df['motivo'] = [d[1] for d in decidido]
+
+    descartados = df[df['nicho'].isna()].copy()
+    df = df[df['nicho'].notna()].copy()
+
+    # Un mismo telefono = una sola llamada. Maps a veces tiene dos fichas del
+    # mismo local (distinto place_id, asi que la dedup de la base no las junta).
+    # Se queda la de mas reseñas, que suele ser la ficha viva.
+    df['_peso'] = pd.to_numeric(df['resenas'], errors='coerce').fillna(0)
+    antes = len(df)
+    df = (df.sort_values('_peso', ascending=False)
+            .drop_duplicates(subset=['telefono'], keep='first')
+            .drop(columns='_peso'))
+    repetidos = antes - len(df)
+    df['rubro'] = df['nicho'].map(lambda n: _rubro_de(n, mapa_rubro))
+    df = df.sort_values(['rubro', 'nicho', 'ciudad', 'nombre'])
 
     os.makedirs(os.path.dirname(archivo_salida), exist_ok=True)
     usados, hojas = set(), []
     with pd.ExcelWriter(archivo_salida, engine='openpyxl') as writer:
-        # Primero "Todos": es la que sirve para filtrar y cruzar.
+        # "Todos" primero: es la hoja para filtrar y cruzar.
+        cols_todos = ['rubro', 'nicho'] + COLUMNAS
         hoja = _nombre_hoja("Todos", usados)
-        todo.rename(columns=TITULOS).to_excel(writer, sheet_name=hoja, index=False)
-        hojas.append((hoja, len(todo), True))
+        df[cols_todos].rename(columns=TITULOS).to_excel(writer, sheet_name=hoja, index=False)
+        hojas.append((hoja, cols_todos, len(df)))
 
-        for rubro, grupo in todo.groupby('rubro', sort=True):
-            hoja = _nombre_hoja(rubro or "Sin rubro", usados)
+        for nicho, grupo in df.groupby('nicho', sort=True):
+            hoja = _nombre_hoja(nicho, usados)
             grupo[COLUMNAS].rename(columns=TITULOS).to_excel(
                 writer, sheet_name=hoja, index=False)
-            hojas.append((hoja, len(grupo), False))
+            hojas.append((hoja, COLUMNAS, len(grupo)))
+
+        if not descartados.empty:
+            cols_desc = ['nombre', 'telefono', 'categoria', 'ciudad', 'motivo']
+            hoja = _nombre_hoja("Descartados", usados)
+            descartados[cols_desc].rename(columns=TITULOS).to_excel(
+                writer, sheet_name=hoja, index=False)
+            hojas.append((hoja, cols_desc, len(descartados)))
 
     _formatear(archivo_salida, hojas)
     sin_tel = con.execute("SELECT COUNT(*) FROM negocios WHERE telefono = ''").fetchone()[0]
-    print(f"Excel: {len(todo)} negocios con telefono -> {archivo_salida}")
-    for h, n, _ in hojas[1:]:
-        print(f"       {h}: {n}")
-    if sin_tel:
-        print(f"       ({sin_tel} sin telefono quedaron en la base, fuera del Excel)")
+    print(f"Excel: {len(df)} negocios en {len(hojas) - 2} nichos -> {archivo_salida}")
+    print(f"       {len(descartados)} descartados por no vender turnos (hoja Descartados)")
+    print(f"       {repetidos} unificados por compartir telefono")
+    print(f"       {sin_tel} sin telefono quedaron en la base, fuera del Excel")
 
 
 def _formatear(archivo, hojas):
@@ -69,15 +113,13 @@ def _formatear(archivo, hojas):
         fino = Side(style='thin', color="D0D0D0")
         borde = Border(left=fino, right=fino, top=fino, bottom=fino)
 
-        for hoja, _, con_rubro in hojas:
+        for hoja, claves, _ in hojas:
             ws = wb[hoja]
-            ws.freeze_panes = "B2"                # fija encabezado y primera columna
-            ws.auto_filter.ref = ws.dimensions    # filtros en todas las columnas
+            ws.freeze_panes = "B2"
+            ws.auto_filter.ref = ws.dimensions
 
-            claves = (['rubro'] if con_rubro else []) + COLUMNAS
             for i, clave in enumerate(claves, start=1):
-                letra = get_column_letter(i)
-                ws.column_dimensions[letra].width = 20 if clave == 'rubro' else ANCHOS[clave]
+                ws.column_dimensions[get_column_letter(i)].width = ANCHOS.get(clave, 20)
                 if clave == 'telefono':
                     # Formato texto: sin esto Excel lee 03416359476 como numero y
                     # se come el 0 inicial, que hace inservible el numero.

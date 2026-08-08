@@ -44,6 +44,10 @@ def _leer_ficha(panel):
     categoria = _texto(panel.locator('button[jsaction*="category"]'))
     if not categoria:
         categoria = _texto(panel.locator('.DkEaL'))
+    # Cuando el negocio no declara rubro, Maps pone en su lugar botones de
+    # edicion ("Añadir categoría", "Añadir una foto") y se colaban como categoria.
+    if categoria.lower().startswith(('añadir', 'agregar', 'reclamar', 'sugerir')):
+        categoria = ""
 
     return telefono, direccion, web, categoria
 
