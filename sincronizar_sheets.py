@@ -27,9 +27,12 @@ GENERADO = "output/Organizate.xlsx"
 def _credenciales():
     crudo = os.environ.get("GOOGLE_CREDENTIALS")
     if crudo:
-        return json.loads(crudo)
+        # lstrip del BOM: guardar el secret con PowerShell (Get-Content -Raw)
+        # le mete un ﻿ adelante y json.loads no lo tolera. Fallaba en todas
+        # las corridas de la nube con "Unexpected UTF-8 BOM".
+        return json.loads(crudo.lstrip('﻿').strip())
     if os.path.exists("credenciales.json"):
-        with open("credenciales.json", encoding="utf-8") as f:
+        with open("credenciales.json", encoding="utf-8-sig") as f:
             return json.load(f)
     sys.exit("Falta GOOGLE_CREDENTIALS (o el archivo credenciales.json). "
              "Ver las instrucciones en el README.")

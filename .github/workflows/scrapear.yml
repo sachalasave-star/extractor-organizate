@@ -40,6 +40,7 @@ jobs:
 
       - name: Mandar los negocios nuevos a Google Sheets
         if: always()          # el script se saltea solo si todavia no hay secrets
+        continue-on-error: true   # Sheets es la copia; la base no se pierde por esto
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
@@ -50,6 +51,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Nada de pull --rebase: negocios.db es binario y git no lo sabe
+          # mergear, asi que si alguien empujo codigo mientras corriamos el
+          # rebase quedaba a medias y se perdia la corrida entera (paso: 5
+          # horas y 10814 negocios). En vez de eso movemos la base al ultimo
+          # main y commiteamos SOLO los archivos de output encima. Nuestra
+          # copia de la db es la buena (salio del checkout mas lo scrapeado)
+          # y el codigo que hayan subido queda intacto.
+          git fetch origin main
+          git reset --mixed origin/main
+
           git add output/negocios.db output/Organizate.xlsx
           if git diff --staged --quiet; then
             echo "Sin novedades."
@@ -57,6 +69,5 @@ jobs:
             CON_TEL=$(python -c "import sqlite3;print(sqlite3.connect('output/negocios.db').execute(\"SELECT COUNT(*) FROM negocios WHERE telefono!=''\").fetchone()[0])")
             HECHAS=$(python -c "import sqlite3;print(sqlite3.connect('output/negocios.db').execute('SELECT COUNT(*) FROM busquedas_hechas').fetchone()[0])")
             git commit -m "Scraping: $CON_TEL negocios con telefono, $HECHAS busquedas hechas"
-            git pull --rebase --autostash || true
-            git push
+            git push origin HEAD:main
           fi
