@@ -14,15 +14,15 @@ from openpyxl.utils import get_column_letter
 from modules.clasificador import clasificar
 
 # Orden pensado para llamar: primero a quien llamas y a que numero, despues
-# donde esta y que tan grande es. La web se saca: no aporta para el contacto.
-COLUMNAS = ['nombre', 'telefono', 'ciudad', 'direccion',
-            'rating', 'resenas', 'categoria', 'url']
+# donde esta y que tan grande es.
+COLUMNAS = ['nombre', 'telefono', 'categoria', 'ciudad', 'web', 'direccion',
+            'rating', 'resenas', 'url']
 TITULOS = {'rubro': 'Rubro', 'nicho': 'Nicho', 'nombre': 'Negocio',
-           'telefono': 'Teléfono', 'categoria': 'Rubro en Maps', 'ciudad': 'Ciudad',
-           'direccion': 'Dirección', 'rating': 'Puntaje',
+           'telefono': 'Teléfono', 'categoria': 'Categoría', 'ciudad': 'Ciudad',
+           'web': 'Sitio web', 'direccion': 'Dirección', 'rating': 'Puntaje',
            'resenas': 'Reseñas', 'url': 'Link en Maps', 'motivo': 'Motivo del descarte'}
 ANCHOS = {'rubro': 20, 'nicho': 22, 'nombre': 42, 'telefono': 16, 'categoria': 26,
-          'ciudad': 18, 'direccion': 44, 'rating': 8, 'resenas': 9,
+          'ciudad': 18, 'web': 32, 'direccion': 44, 'rating': 8, 'resenas': 9,
           'url': 14, 'motivo': 40}
 
 
@@ -154,10 +154,13 @@ def _formatear(archivo, hojas):
                     for fila in range(2, ws.max_row + 1):
                         ws.cell(row=fila, column=i).number_format = '@'
                 elif clave == 'url':
+                    # La url queda como valor, no como texto "ver en Maps": es lo
+                    # que despues se copia a Google Sheets, donde el texto solo no
+                    # sirve para nada. El hipervinculo la deja clickeable igual.
                     for fila in range(2, ws.max_row + 1):
                         celda = ws.cell(row=fila, column=i)
                         if celda.value:
-                            celda.hyperlink, celda.value = celda.value, "ver en Maps"
+                            celda.hyperlink = celda.value
                             celda.font = Font(color="0563C1", underline="single")
 
             for celda in ws[1]:

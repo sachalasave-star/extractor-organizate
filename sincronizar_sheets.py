@@ -1,14 +1,13 @@
-"""Manda los negocios nuevos a una planilla de Google Sheets, SIN tocar lo que
+"""Manda los negocios nuevos a la planilla de Google Sheets, SIN tocar lo que
 anotaron los vendedores.
 
     python sincronizar_sheets.py
 
-Igual que actualizar.py pero contra Sheets: solo AGREGA filas al final. Las que
-ya estan no se leen para reescribirlas, se dejan donde estan. Asi Estado,
-Vendedor y Notas sobreviven aunque un vendedor este escribiendo en ese momento.
+Solo AGREGA filas al final de la hoja de cada nicho. Las que ya estan no se
+leen para reescribirlas: se dejan donde estan. Asi Vendedor, Estado y
+Observaciones sobreviven aunque alguien este escribiendo en ese momento.
 
-Se adapta a las columnas de la planilla: si le agregas o renombras una desde
-Google Sheets, las filas nuevas se acomodan a lo que encuentre.
+La estructura la arma armar_planilla.py; esto es el dia a dia.
 
 Necesita:
   GOOGLE_CREDENTIALS  json de la cuenta de servicio (o archivo credenciales.json)
@@ -20,11 +19,9 @@ import sys
 
 import pandas as pd
 
+from modules.planilla import COLUMNAS, CLAVE, CONFIG, RANKING, IDX, fila_desde
+
 GENERADO = "output/Organizate.xlsx"
-CLAVE = "Teléfono"
-HOJA = "Negocios"
-GESTION = ["Estado", "Vendedor", "Fecha de llamada", "Notas"]
-SIN_LLAMAR = "Sin llamar"
 
 
 def _credenciales():
@@ -38,106 +35,91 @@ def _credenciales():
              "Ver las instrucciones en el README.")
 
 
-def _abrir_hoja():
+def _abrir_libro():
     try:
         import gspread
         from google.oauth2.service_account import Credentials
     except ImportError:
         sys.exit("Falta gspread: pip install gspread google-auth")
-
-    sheet_id = os.environ.get("SHEET_ID")
-    if not sheet_id:
-        sys.exit("Falta SHEET_ID: es el codigo largo que aparece en la url de la "
-                 "planilla, entre /d/ y /edit")
-
     cred = Credentials.from_service_account_info(
-        _credenciales(),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    libro = gspread.authorize(cred).open_by_key(sheet_id)
-    try:
-        return libro.worksheet(HOJA)
-    except Exception:
-        # Sin hoja "Negocios" usa la primera que haya: es la que el usuario ya
-        # tiene armada. Crear una aparte lo dejaria trabajando en la equivocada.
-        return libro.sheet1
+        _credenciales(), scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    return gspread.authorize(cred).open_by_key(os.environ["SHEET_ID"])
 
 
-def filas_nuevas(generado, encabezados, telefonos_existentes):
-    """Las filas del Excel generado que todavia no estan en la planilla,
-    acomodadas al orden de columnas que ya tiene la planilla."""
-    hoja_datos = "Todos" if "Todos" in pd.ExcelFile(generado).sheet_names else 0
-    df = pd.read_excel(generado, sheet_name=hoja_datos, dtype=str).fillna("")
-    df = df[df[CLAVE].astype(str).str.strip() != ""]
-    df = df[~df[CLAVE].isin(telefonos_existentes)]
-    if df.empty:
-        return []
-
-    for col in encabezados:
-        if col not in df.columns:
-            df[col] = SIN_LLAMAR if col == "Estado" else ""
-    return df[encabezados].astype(str).values.tolist()
+def nuevos_por_nicho(df, ya_cargados):
+    """{nicho: [filas]} con lo que todavia no esta en la planilla."""
+    salida = {}
+    for nicho, grupo in df.groupby('Nicho'):
+        faltan = grupo[~grupo[CLAVE].isin(ya_cargados.get(nicho, set()))]
+        if not faltan.empty:
+            salida[nicho] = [fila_desde(r) for r in faltan.to_dict('records')]
+    return salida
 
 
 def sincronizar(generado=GENERADO):
     if not os.path.exists(generado):
         sys.exit(f"No existe {generado}. Corre el scraper primero.")
-
-    # Sin configurar todavia no es un error: el scraping igual sirve y se guarda.
     if not os.environ.get("SHEET_ID") or not (
             os.environ.get("GOOGLE_CREDENTIALS") or os.path.exists("credenciales.json")):
         print("Google Sheets sin configurar (falta SHEET_ID o las credenciales), salteando.")
         return
 
-    hoja = _abrir_hoja()
-    existente = hoja.get_all_values()
+    df = pd.read_excel(generado, sheet_name="Todos", dtype=str).fillna("")
+    df = df[df[CLAVE].str.strip() != ""]
 
-    if not existente or not any(existente[0]):
-        # Planilla vacia: la inicializa con las columnas del export + gestion.
-        cols = pd.read_excel(generado, sheet_name="Todos", nrows=0).columns.tolist()
-        encabezados = cols + GESTION
-        hoja.update(values=[encabezados], range_name="A1")
-        hoja.freeze(rows=1)
-        existente = [encabezados]
+    libro = _abrir_libro()
+    hojas = {h.title: h for h in libro.worksheets() if h.title not in (CONFIG, RANKING)}
 
-    encabezados = existente[0]
-    if CLAVE not in encabezados:
-        sys.exit(f"La planilla no tiene columna '{CLAVE}'. Sin ella no puedo "
-                 f"saber que negocio ya esta cargado.")
+    # Solo la columna del telefono: traer las hojas enteras seria lentisimo y
+    # ademas arriesga leer datos a medio escribir por un vendedor.
+    col = chr(ord('A') + IDX[CLAVE])
+    ya_cargados = {}
+    for titulo, hoja in hojas.items():
+        try:
+            ya_cargados[titulo] = set(hoja.col_values(IDX[CLAVE] + 1)[1:])
+        except Exception as e:
+            print(f"   no pude leer '{titulo}' ({e}), la salteo")
+            ya_cargados[titulo] = None
 
-    i_tel = encabezados.index(CLAVE)
-    existentes = {f[i_tel] for f in existente[1:] if len(f) > i_tel and f[i_tel]}
+    total = 0
+    for nicho, filas in nuevos_por_nicho(df, {k: v for k, v in ya_cargados.items() if v}).items():
+        if nicho not in hojas:
+            hoja = libro.add_worksheet(title=nicho[:99], rows=len(filas) + 500,
+                                       cols=len(COLUMNAS))
+            hoja.update(values=[COLUMNAS], range_name="A1")
+            print(f"   hoja nueva: {nicho} (correr armar_planilla.py para darle formato)")
+        elif ya_cargados.get(nicho) is None:
+            continue                      # no se pudo leer: mejor no duplicar
+        else:
+            hoja = hojas[nicho]
+        # append_rows escribe solo al final: no toca una celda de lo que ya hay.
+        hoja.append_rows(filas, value_input_option="RAW")
+        print(f"   {nicho}: +{len(filas)}")
+        total += len(filas)
 
-    nuevas = filas_nuevas(generado, encabezados, existentes)
-    if not nuevas:
-        print(f"Sin novedades: los {len(existentes)} negocios ya estaban en la planilla.")
-        return
-
-    # append_rows escribe solo al final: no toca ni una celda de lo que ya hay.
-    hoja.append_rows(nuevas, value_input_option="RAW")
-    print(f"Agregados {len(nuevas)} negocios ({len(existentes)} ya estaban, intactos).")
+    print(f"Agregados {total} negocios nuevos." if total else "Sin novedades.")
 
 
 def demo():
-    """Lo que importa: acomodar las filas nuevas a las columnas de la planilla y
-    no volver a mandar las que ya estan."""
-    import tempfile
-    d = tempfile.mkdtemp()
-    gen = os.path.join(d, 'g.xlsx')
-    pd.DataFrame({'Negocio': ['A', 'B', 'C'],
-                  CLAVE: ['0341111', '0341222', '0341333'],
-                  'Ciudad': ['Rosario'] * 3}).to_excel(gen, index=False, sheet_name='Todos')
+    from modules.planilla import SIN_CONTACTAR
+    df = pd.DataFrame([
+        {'Nicho': 'Barberías', 'Negocio': 'A', CLAVE: '0341111', 'Categoría': 'Barbería',
+         'Ciudad': 'Rosario', 'Link en Maps': 'u1'},
+        {'Nicho': 'Barberías', 'Negocio': 'B', CLAVE: '0341222', 'Categoría': 'Barbería',
+         'Ciudad': 'Rosario', 'Link en Maps': 'u2'},
+        {'Nicho': 'Spas', 'Negocio': 'C', CLAVE: '0341333', 'Categoría': 'Spa',
+         'Ciudad': 'Rosario', 'Link en Maps': 'u3'},
+    ])
+    # En Barberías ya esta cargado el 0341111
+    r = nuevos_por_nicho(df, {'Barberías': {'0341111'}})
 
-    # La planilla tiene otro orden de columnas y una propia que el export no conoce
-    encabezados = [CLAVE, 'Negocio', 'Estado', 'Vendedor', 'Prioridad']
-    filas = filas_nuevas(gen, encabezados, {'0341111'})
-
-    assert len(filas) == 2, f'esperaba 2 filas nuevas, hay {len(filas)}'
-    assert filas[0][0] == '0341222', f'no respeto el orden de columnas: {filas[0]}'
-    assert filas[0][1] == 'B'
-    assert filas[0][2] == SIN_LLAMAR, 'no inicializo el Estado'
-    assert filas[0][4] == '', 'una columna propia de la planilla deberia quedar vacia'
-    assert all(f[0] != '0341111' for f in filas), 'remando un negocio que ya estaba'
-    print('OK  sheets: respeta las columnas de la planilla y no repite negocios')
+    assert set(r) == {'Barberías', 'Spas'}, f'nichos mal separados: {set(r)}'
+    assert len(r['Barberías']) == 1, 'remando un negocio que ya estaba'
+    assert r['Barberías'][0][IDX['Negocio']] == 'B'
+    assert len(r['Spas']) == 1
+    assert r['Spas'][0][IDX['Estado']] == SIN_CONTACTAR
+    assert all(len(f) == len(COLUMNAS) for fs in r.values() for f in fs), 'ancho de fila mal'
+    print('OK  sync: separa por nicho y no repite lo ya cargado')
 
 
 if __name__ == "__main__":
