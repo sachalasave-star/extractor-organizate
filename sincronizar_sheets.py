@@ -57,7 +57,9 @@ def _abrir_hoja():
     try:
         return libro.worksheet(HOJA)
     except Exception:
-        return libro.add_worksheet(title=HOJA, rows=1000, cols=30)
+        # Sin hoja "Negocios" usa la primera que haya: es la que el usuario ya
+        # tiene armada. Crear una aparte lo dejaria trabajando en la equivocada.
+        return libro.sheet1
 
 
 def filas_nuevas(generado, encabezados, telefonos_existentes):
