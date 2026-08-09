@@ -4,6 +4,7 @@ Una hoja por nicho, mas Config (vendedores editables) y Ranking (metricas
 vivas). Los desplegables de Vendedor apuntan a Config, asi sumar o sacar un
 vendedor es escribir en una celda y no tocar 43 validaciones.
 """
+import time
 
 # Columnas de la hoja de cada nicho, en orden. Las 5 primeras son las que se
 # usan llamando; el resto es contexto que se mira solo cuando hace falta.
@@ -55,7 +56,6 @@ def col_letra(i):
 def reintentar(fn, *a, **kw):
     """Sheets corta a las 60 lecturas y 60 escrituras por minuto. Espera y
     sigue en vez de dejar la planilla a medio armar o a medio sincronizar."""
-    import time
     for intento in range(6):
         try:
             return fn(*a, **kw)

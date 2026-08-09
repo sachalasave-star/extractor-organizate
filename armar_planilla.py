@@ -580,7 +580,7 @@ def armar(generado=GENERADO):
     _hoja_config(libro)
     print(f"   {CONFIG} lista ({len(VENDEDORES)} vendedores)")
 
-    previas = {h.title: h for h in libro.worksheets()}
+    previas = {h.title: h for h in reintentar(libro.worksheets)}
     datos = {nicho[:99]: [COLUMNAS] + [fila_desde(r) for r in
                                        df[df['Nicho'] == nicho].to_dict('records')]
              for nicho in nichos}
@@ -597,7 +597,7 @@ def armar(generado=GENERADO):
             for t, f in faltantes]})
         print(f"   {len(faltantes)} hojas creadas")
 
-    hojas = {h.title: h for h in libro.worksheets()}
+    hojas = {h.title: h for h in reintentar(libro.worksheets)}
     for titulo in datos:
         if titulo in previas:
             reintentar(hojas[titulo].clear)
@@ -656,6 +656,38 @@ def demo():
     assert fila[IDX['Observaciones']] == ''
     assert 'Sitio web' not in COLUMNAS, 'la web no va en la planilla'
     print(f'OK  planilla: {len(COLUMNAS)} columnas, fila armada correctamente')
+
+    # reintentar: un 429 tiene que esperar y volver, cualquier otro error tiene
+    # que salir de una. Si esto se rompe, el sync se saltea nichos en silencio.
+    import modules.planilla as P
+    dormido = []
+    real_sleep = P.time.sleep
+    P.time.sleep = dormido.append          # no esperar 30s de verdad en el test
+    try:
+        _probar_reintentar(dormido)
+    finally:
+        P.time.sleep = real_sleep
+    assert dormido == [30, 60], f'espera mal escalonada: {dormido}'
+    print('OK  reintentar: espera el 429 y deja pasar el resto')
+
+
+def _probar_reintentar(dormido):
+    llamadas = []
+    def falla_dos_veces():
+        llamadas.append(1)
+        if len(llamadas) <= 2:
+            raise Exception("APIError: [429]: Quota exceeded")
+        return "listo"
+    assert reintentar(falla_dos_veces) == "listo", 'no reintento tras el 429'
+    assert len(llamadas) == 3, f'reintento {len(llamadas)} veces'
+
+    def falla_404():
+        raise Exception("APIError: [404]: not found")
+    try:
+        reintentar(falla_404)
+        assert False, 'se comio un error que no era de cuota'
+    except Exception as e:
+        assert '404' in str(e), 'tapo un error que no era de cuota'
 
 
 if __name__ == "__main__":
