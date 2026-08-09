@@ -19,7 +19,8 @@ import sys
 
 import pandas as pd
 
-from modules.planilla import COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, IDX, fila_desde
+from modules.planilla import (COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, IDX,
+                              fila_desde, reintentar)
 
 GENERADO = "output/Organizate.xlsx"
 
@@ -71,7 +72,8 @@ def sincronizar(generado=GENERADO):
     df = df[df[CLAVE].str.strip() != ""]
 
     libro = _abrir_libro()
-    hojas = {h.title: h for h in libro.worksheets() if h.title not in (CONFIG, PANEL, RESUMEN)}
+    hojas = {h.title: h for h in reintentar(libro.worksheets)
+             if h.title not in (CONFIG, PANEL, RESUMEN)}
 
     # Solo la columna del telefono: traer las hojas enteras seria lentisimo y
     # ademas arriesga leer datos a medio escribir por un vendedor.
@@ -79,7 +81,7 @@ def sincronizar(generado=GENERADO):
     ya_cargados = {}
     for titulo, hoja in hojas.items():
         try:
-            ya_cargados[titulo] = set(hoja.col_values(IDX[CLAVE] + 1)[1:])
+            ya_cargados[titulo] = set(reintentar(hoja.col_values, IDX[CLAVE] + 1)[1:])
         except Exception as e:
             print(f"   no pude leer '{titulo}' ({e}), la salteo")
             ya_cargados[titulo] = None
@@ -87,16 +89,16 @@ def sincronizar(generado=GENERADO):
     total = 0
     for nicho, filas in nuevos_por_nicho(df, {k: v for k, v in ya_cargados.items() if v}).items():
         if nicho not in hojas:
-            hoja = libro.add_worksheet(title=nicho[:99], rows=len(filas) + 500,
-                                       cols=len(COLUMNAS))
-            hoja.update(values=[COLUMNAS], range_name="A1")
+            hoja = reintentar(libro.add_worksheet, title=nicho[:99],
+                              rows=len(filas) + 500, cols=len(COLUMNAS))
+            reintentar(hoja.update, values=[COLUMNAS], range_name="A1")
             print(f"   hoja nueva: {nicho} (correr armar_planilla.py para darle formato)")
         elif ya_cargados.get(nicho) is None:
             continue                      # no se pudo leer: mejor no duplicar
         else:
             hoja = hojas[nicho]
         # append_rows escribe solo al final: no toca una celda de lo que ya hay.
-        hoja.append_rows(filas, value_input_option="RAW")
+        reintentar(hoja.append_rows, filas, value_input_option="RAW")
         print(f"   {nicho}: +{len(filas)}")
         total += len(filas)
 

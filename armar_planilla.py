@@ -9,7 +9,6 @@ para el dia a dia esta sincronizar_sheets.py, que solo agrega filas.
 """
 import os
 import sys
-import time
 
 import pandas as pd
 
@@ -17,7 +16,8 @@ from modules.planilla import (COLUMNAS, ANCHOS, CLAVE, VENDEDORES, ESTADOS,
                               NOMBRES_ESTADO, MOTIVOS, CONFIG, PANEL, RESUMEN,
                               FILA_VENDEDORES, FILA_ESTADOS, FILA_MOTIVOS,
                               COL_VENDEDOR, COL_ESTADO, COL_MOTIVO, COL_FECHA,
-                              COL_TELEFONO, IDX, col_letra, fila_desde)
+                              COL_TELEFONO, IDX, col_letra, fila_desde,
+                              reintentar)
 from modules.estilo import (FUENTE, FUENTE_DATOS, TAM_ENCABEZADO, TAM_DATOS,
                             color_rubro, hex_a_rgb, TINTA, TINTA_SUAVE, LINEA, BLANCO)
 from sincronizar_sheets import _credenciales, GENERADO
@@ -41,20 +41,6 @@ def _abrir_libro():
 
 def _rgb(c):
     return {"red": c[0], "green": c[1], "blue": c[2]}
-
-
-def reintentar(fn, *a, **kw):
-    """Sheets corta a las 60 escrituras por minuto. Espera y sigue en vez de
-    dejar la planilla a medio armar."""
-    for intento in range(6):
-        try:
-            return fn(*a, **kw)
-        except Exception as e:
-            if '429' not in str(e) or intento == 5:
-                raise
-            espera = 30 * (intento + 1)
-            print(f"   (limite de Google, esperando {espera}s)")
-            time.sleep(espera)
 
 
 def _formato_hoja(sid, filas, rubro=''):

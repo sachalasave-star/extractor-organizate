@@ -52,6 +52,21 @@ def col_letra(i):
     return chr(ord('A') + i)
 
 
+def reintentar(fn, *a, **kw):
+    """Sheets corta a las 60 lecturas y 60 escrituras por minuto. Espera y
+    sigue en vez de dejar la planilla a medio armar o a medio sincronizar."""
+    import time
+    for intento in range(6):
+        try:
+            return fn(*a, **kw)
+        except Exception as e:
+            if '429' not in str(e) or intento == 5:
+                raise
+            espera = 30 * (intento + 1)
+            print(f"   (limite de Google, esperando {espera}s)")
+            time.sleep(espera)
+
+
 IDX = {c: i for i, c in enumerate(COLUMNAS)}
 COL_VENDEDOR = col_letra(IDX['Vendedor'])
 COL_ESTADO = col_letra(IDX['Estado'])
