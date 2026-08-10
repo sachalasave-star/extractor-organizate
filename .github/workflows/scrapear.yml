@@ -40,7 +40,12 @@ jobs:
 
       - name: Mandar los negocios nuevos a Google Sheets
         if: always()          # el script se saltea solo si todavia no hay secrets
-        continue-on-error: true   # Sheets es la copia; la base no se pierde por esto
+        # Sin continue-on-error a proposito. Lo tenia para que una falla de
+        # Sheets no se llevara puesta la corrida, pero de eso ya se encarga el
+        # "if: always()" del paso que guarda: la base se commitea igual. Lo
+        # unico que compraba era silencio, y salio caro: el 9/8 las dos
+        # corridas figuraron en verde con el sync muerto y la planilla estuvo
+        # dos dias sin una fila nueva. Que quede en rojo y llegue el mail.
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SHEET_ID: ${{ secrets.SHEET_ID }}

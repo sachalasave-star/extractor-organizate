@@ -642,6 +642,72 @@ def armar(generado=GENERADO):
     print(f"\nListo: {libro.url}")
 
 
+def _crudas(meta):
+    """Hojas de nicho sin formato, sacadas del metadata del libro.
+
+    El sello es frozenRowCount: _formato_hoja congela la primera fila, y la
+    hoja que crea sincronizar_sheets con add_worksheet viene en 0. Es lo unico
+    que distingue una hoja cruda de una lista sin leer una sola celda.
+    """
+    salida = []
+    for h in meta.get('sheets', []):
+        p = h['properties']
+        if p['title'] in (CONFIG, PANEL, RESUMEN):
+            continue
+        if not p.get('gridProperties', {}).get('frozenRowCount'):
+            salida.append(p)
+    return salida
+
+
+def poner_al_dia(generado=GENERADO):
+    """Formatea las hojas que creo el sync y rehace Panel y Resumen.
+
+    armar() no se puede correr con los vendedores adentro: rehace Config (y se
+    lleva puestos los vendedores cargados a mano), hace clear() de cada hoja y
+    borra las hojas de los nichos que ya no estan en el Excel, con el trabajo
+    hecho adentro. Esto toca solo lo que no tiene nada de nadie: el formato de
+    las hojas nuevas, que salen crudas y sin desplegables, y las dos hojas de
+    formulas, que hay que rehacer para que cuenten los nichos nuevos.
+    """
+    if not os.path.exists(generado):
+        sys.exit(f"No existe {generado}. Corre el scraper primero.")
+    df = pd.read_excel(generado, sheet_name="Todos", dtype=str).fillna("")
+    df = df[df[CLAVE].str.strip() != ""]
+
+    libro = _abrir_libro()
+    meta = reintentar(libro.fetch_sheet_metadata)
+    crudas = _crudas(meta)
+
+    if crudas:
+        rubro_de = dict(zip(df['Nicho'], df['Rubro']))
+        filas_de = df['Nicho'].value_counts().to_dict()
+        reqs = []
+        for p in crudas:
+            titulo = p['title']
+            reqs += _formato_hoja(p['sheetId'], filas_de.get(titulo, 0) + 1,
+                                  rubro_de.get(titulo, ''))
+            print(f"   formateada: {titulo}")
+        for i in range(0, len(reqs), 150):
+            reintentar(libro.batch_update, {"requests": reqs[i:i + 150]})
+    else:
+        print("   no hay hojas nuevas sin formato")
+
+    # Panel y Resumen se rehacen siempre: sus totales son un COUNTIF explicito
+    # por hoja (INDIRECT sobre un array no recorre nada en Sheets), asi que un
+    # nicho nuevo no se cuenta solo. Son formulas, no tienen datos de nadie.
+    # La lista sale del libro y no del Excel: los nichos apagados siguen
+    # teniendo su hoja con trabajo adentro y tienen que seguir sumando.
+    nichos = sorted(p['title'] for h in meta.get('sheets', [])
+                    for p in [h['properties']]
+                    if p['title'] not in (CONFIG, PANEL, RESUMEN))
+    _hoja_panel(libro, nichos)
+    print(f"   {PANEL} rehecho sobre {len(nichos)} nichos")
+    _hoja_resumen(libro, nichos)
+    print(f"   {RESUMEN} rehecho")
+
+    print(f"\nListo: {libro.url}")
+
+
 def demo():
     from modules.planilla import SIN_CONTACTAR
     n = {'Negocio': 'Barber X', 'Teléfono': '03411234567', 'Categoría': 'Barbería',
@@ -685,6 +751,27 @@ def demo():
             os.environ['SHEET_ID'] = previo
     print('OK  _sheet_id: le saca el BOM y el \\n que mete PowerShell')
 
+    # _crudas: si se equivoca para el lado de "esta lista", la hoja nueva queda
+    # sin desplegables para siempre; si se equivoca para el otro, le manda
+    # addBanding a una hoja que ya tiene y Google rechaza el batch entero.
+    def _hoja(titulo, frozen):
+        props = {"title": titulo, "sheetId": abs(hash(titulo)) % 1000}
+        if frozen is not None:
+            props["gridProperties"] = {"frozenRowCount": frozen}
+        return {"properties": props}
+    meta = {"sheets": [
+        _hoja("Peluquerías", 1),        # formateada por armar()
+        _hoja("Flebología", 0),         # recien creada por el sync
+        _hoja("Ópticas", None),         # sin gridProperties en el metadata
+        _hoja(CONFIG, 0),               # no es hoja de nicho
+        _hoja(PANEL, 2),
+        _hoja(RESUMEN, 3),
+    ]}
+    crudas = {p['title'] for p in _crudas(meta)}
+    assert crudas == {"Flebología", "Ópticas"}, f'detecto mal: {crudas}'
+    assert not _crudas({}), 'metadata vacio tiene que dar vacio'
+    print('OK  _crudas: agarra las del sync y no toca Config, Panel ni Resumen')
+
 
 def _probar_reintentar(dormido):
     llamadas = []
@@ -708,5 +795,13 @@ def _probar_reintentar(dormido):
 if __name__ == "__main__":
     if '--test' in sys.argv:
         demo()
+    elif '--nuevas' in sys.argv:
+        poner_al_dia()
     else:
+        # armar() borra y reescribe TODO. Con vendedores cargando datos va
+        # --nuevas, que solo formatea lo que creo el sync.
+        if input("armar() rehace la planilla de cero y se lleva puesto lo que "
+                 "hayan cargado los vendedores.\nSi solo queres formatear las "
+                 "hojas nuevas es --nuevas.\nEscribi REHACER para seguir: ") != "REHACER":
+            sys.exit("Cancelado.")
         armar()
