@@ -122,9 +122,36 @@ PRIORIDAD = {
 
 APAGADO = 3          # de esta prioridad en adelante, Activo=No
 
-CIUDADES = ['Rosario', 'Buenos Aires', 'Córdoba', 'Mendoza', 'La Plata',
-            'Mar del Plata', 'San Miguel de Tucumán', 'Salta', 'Santa Fe',
-            'Neuquén', 'Bahía Blanca', 'Paraná']
+# Los 24 partidos del conurbano. "Buenos Aires" a secas devuelve CABA sola, y
+# afuera de la General Paz vive mas gente que en Cordoba, Rosario y Mendoza
+# juntas: era el agujero mas grande que teniamos.
+#
+# Todos llevan ", Buenos Aires" pegado y NO es decorativo. El termino que se
+# busca es "{keyword} en {ciudad}, Argentina", asi que el nombre del partido va
+# crudo a Maps, y varios existen en otra provincia: Merlo es San Luis, Pilar es
+# Cordoba, Avellaneda es Santa Fe, Ituzaingo es Corrientes, San Fernando es
+# Catamarca y San Miguel es Tucuman. Es el mismo bug que "Cordoba" trayendo
+# España, que no se noto hasta que aparecieron 91 telefonos con +34.
+CONURBANO = ['La Matanza', 'Lomas de Zamora', 'Quilmes', 'Almirante Brown',
+             'Merlo', 'Moreno', 'Lanús', 'Florencio Varela',
+             'General San Martín', 'Tigre', 'Avellaneda', 'Berazategui',
+             'Malvinas Argentinas', 'Morón', 'Tres de Febrero', 'Pilar',
+             'Esteban Echeverría', 'San Isidro', 'San Miguel', 'José C. Paz',
+             'Escobar', 'Vicente López', 'Hurlingham', 'Ituzaingó']
+
+# El conurbano va pegado a Buenos Aires porque es la misma plaza. No le saca el
+# lugar a nadie que importe: prioridad 1 ya cerro Rosario, Buenos Aires,
+# Cordoba, Mendoza, La Plata y Mar del Plata, asi que lo unico que retrasa es
+# Tucuman para abajo, que son plazas chicas al lado de estos 24 partidos.
+#
+# NO renombrar una ciudad ya scrapeada. La busqueda queda marcada como hecha
+# por su termino completo, asi que tocarle el nombre a "Buenos Aires" manda a
+# rehacer de cero las 147 busquedas que ya cerro.
+CIUDADES = (['Rosario', 'Buenos Aires']
+            + [f'{p}, Buenos Aires' for p in CONURBANO]
+            + ['Córdoba', 'Mendoza', 'La Plata', 'Mar del Plata',
+               'San Miguel de Tucumán', 'Salta', 'Santa Fe', 'Neuquén',
+               'Bahía Blanca', 'Paraná'])
 
 
 def generar(destino='config/busquedas.xlsx'):
@@ -182,6 +209,18 @@ def demo():
             f'prioridad {p}: {CIUDADES[0]} no cubre todos sus nichos'
         assert g.head(len(primera))['Ciudad'].eq(CIUDADES[0]).all(), \
             f'prioridad {p}: no arranca completando {CIUDADES[0]}'
+
+    # Un partido sin provincia se va a la otra punta del pais y no se nota:
+    # vuelve con negocios reales, telefono valido y todo. Solo se cae si alguien
+    # mira los codigos de area.
+    for p in CONURBANO:
+        assert f'{p}, Buenos Aires' in CIUDADES, f'{p} quedo sin provincia'
+    assert len(CIUDADES) == len(set(CIUDADES)), 'hay una ciudad repetida'
+    # Y que sigan pegados a Buenos Aires: si el conurbano cae al final del
+    # archivo, el scraper no llega nunca y agregarlo no sirvio de nada.
+    i = CIUDADES.index('Buenos Aires')
+    assert CIUDADES[i + 1:i + 1 + len(CONURBANO)] == [f'{p}, Buenos Aires' for p in CONURBANO], \
+        'el conurbano se despego de Buenos Aires'
 
     import os
     os.remove('output/_busquedas_test.xlsx')
