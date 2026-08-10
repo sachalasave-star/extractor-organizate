@@ -20,7 +20,7 @@ from modules.planilla import (COLUMNAS, ANCHOS, CLAVE, VENDEDORES, ESTADOS,
                               reintentar)
 from modules.estilo import (FUENTE, FUENTE_DATOS, TAM_ENCABEZADO, TAM_DATOS,
                             color_rubro, hex_a_rgb, TINTA, TINTA_SUAVE, LINEA, BLANCO)
-from sincronizar_sheets import _credenciales, GENERADO
+from sincronizar_sheets import _credenciales, _sheet_id, GENERADO
 
 MAX_VENDEDORES = 40      # margen del desplegable, no cuesta nada
 # Filas del ranking. Cada una son 6 formulas x 43 hojas: con 40 la planilla se
@@ -31,7 +31,7 @@ FILAS_RANKING = 12
 def _abrir_libro():
     import gspread
     from google.oauth2.service_account import Credentials
-    sheet_id = os.environ.get("SHEET_ID")
+    sheet_id = _sheet_id()
     if not sheet_id:
         sys.exit("Falta SHEET_ID")
     cred = Credentials.from_service_account_info(
@@ -669,6 +669,21 @@ def demo():
         P.time.sleep = real_sleep
     assert dormido == [30, 60], f'espera mal escalonada: {dormido}'
     print('OK  reintentar: espera el 429 y deja pasar el resto')
+
+    # _sheet_id: el id sucio da 404 y el 404 no dice por que. Las dos corridas
+    # del 9/8 scrapearon 20203 negocios y no subieron una fila por esto.
+    limpio = '1MICJFEZXlGLJPTdBSAtmkUEMzQdjAzxsxJglFupQp_c'
+    previo = os.environ.get('SHEET_ID')
+    try:
+        for sucio in (limpio, limpio + '\n', '﻿' + limpio, ' ' + limpio + ' \r\n'):
+            os.environ['SHEET_ID'] = sucio
+            assert _sheet_id() == limpio, f'no limpio {sucio!r}'
+        os.environ.pop('SHEET_ID')
+        assert _sheet_id() == '', 'sin secret tiene que dar vacio, no reventar'
+    finally:
+        if previo is not None:
+            os.environ['SHEET_ID'] = previo
+    print('OK  _sheet_id: le saca el BOM y el \\n que mete PowerShell')
 
 
 def _probar_reintentar(dormido):

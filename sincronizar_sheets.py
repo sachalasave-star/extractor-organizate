@@ -39,6 +39,14 @@ def _credenciales():
              "Ver las instrucciones en el README.")
 
 
+def _sheet_id():
+    # Mismo cuento que el BOM de las credenciales: el secret cargado desde
+    # PowerShell viene con un ﻿ adelante o un \n atras, y Sheets contesta
+    # 404 "Requested entity was not found" (no dice que el id venga sucio).
+    # Dos dias de corridas scrapearon bien y no subieron una sola fila.
+    return os.environ.get("SHEET_ID", "").strip('﻿ \t\r\n')
+
+
 def _abrir_libro():
     try:
         import gspread
@@ -47,7 +55,7 @@ def _abrir_libro():
         sys.exit("Falta gspread: pip install gspread google-auth")
     cred = Credentials.from_service_account_info(
         _credenciales(), scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    return gspread.authorize(cred).open_by_key(os.environ["SHEET_ID"])
+    return gspread.authorize(cred).open_by_key(_sheet_id())
 
 
 def nuevos_por_nicho(df, ya_cargados):
@@ -63,7 +71,7 @@ def nuevos_por_nicho(df, ya_cargados):
 def sincronizar(generado=GENERADO):
     if not os.path.exists(generado):
         sys.exit(f"No existe {generado}. Corre el scraper primero.")
-    if not os.environ.get("SHEET_ID") or not (
+    if not _sheet_id() or not (
             os.environ.get("GOOGLE_CREDENTIALS") or os.path.exists("credenciales.json")):
         print("Google Sheets sin configurar (falta SHEET_ID o las credenciales), salteando.")
         return
