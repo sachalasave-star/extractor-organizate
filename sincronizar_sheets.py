@@ -20,7 +20,8 @@ import sys
 import pandas as pd
 
 from modules.planilla import (COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, IDX,
-                              fila_desde, reintentar)
+                              col_letra, fila_desde, reintentar)
+from modules.telefono import canonico
 
 GENERADO = "output/Organizate.xlsx"
 
@@ -113,6 +114,75 @@ def sincronizar(generado=GENERADO):
     print(f"Agregados {total} negocios nuevos." if total else "Sin novedades.")
 
 
+def calificar_existentes(generado=GENERADO):
+    """Rellena Prioridad y Por que en las filas que ya estaban en la planilla.
+
+    Las filas nuevas las trae el sync solo, porque Prioridad entro en COLUMNAS.
+    Las 18291 que ya estaban quedaron con las dos columnas vacias, que son
+    justo las que el equipo esta llamando.
+
+    Escribe SOLO esas dos columnas, cruzando por telefono normalizado. No toca
+    Vendedor, Estado, Motivo, Observaciones ni Ultima gestion: se calcula el
+    rango exacto de las dos ultimas columnas y se escribe ahi.
+    """
+    df = pd.read_excel(generado, sheet_name="Todos", dtype=str).fillna("")
+    calif = {canonico(t): (p, q) for t, p, q in
+             zip(df[CLAVE], df['Prioridad'], df['Por qué']) if canonico(t)}
+    print(f"{len(calif)} negocios calificados en el Excel")
+
+    libro = _abrir_libro()
+    meta = reintentar(libro.fetch_sheet_metadata)
+    hojas = {h['properties']['title']: h['properties'] for h in meta.get('sheets', [])
+             if h['properties']['title'] not in (CONFIG, PANEL, RESUMEN)}
+
+    # Las hojas se crearon con exactamente 10 columnas. La API de valores no
+    # agranda la grilla sola: escribir en la 11 da "exceeds grid limits".
+    angostas = [p for p in hojas.values()
+                if p.get('gridProperties', {}).get('columnCount', 0) < len(COLUMNAS)]
+    if angostas:
+        reintentar(libro.batch_update, {"requests": [
+            {"updateSheetProperties": {
+                "properties": {"sheetId": p['sheetId'],
+                               "gridProperties": {"columnCount": len(COLUMNAS)}},
+                "fields": "gridProperties.columnCount"}} for p in angostas]})
+        print(f"   {len(angostas)} hojas ensanchadas a {len(COLUMNAS)} columnas")
+
+    desde = col_letra(IDX['Prioridad'])
+    hasta = col_letra(IDX['Por qué'])
+    col_tel = col_letra(IDX[CLAVE])
+
+    # Las 45 columnas de telefono en UN request. Una hoja por vez son 45
+    # lecturas, y libro.worksheet(titulo) se trae el metadata entero cada vez,
+    # asi que eran 90: el limite de Google son 60 por minuto y reventaba.
+    titulos = list(hojas)
+    leidas = reintentar(libro.values_batch_get,
+                        [f"'{t}'!{col_tel}2:{col_tel}" for t in titulos])
+
+    datos, sin_datos = [], 0
+    for titulo, rango in zip(titulos, leidas.get('valueRanges', [])):
+        tels = [f[0] if f else '' for f in rango.get('values', [])]
+        if not tels:
+            continue
+        valores = [[COLUMNAS[IDX['Prioridad']], COLUMNAS[IDX['Por qué']]]]
+        for t in tels:
+            p, q = calif.get(canonico(t), ('', ''))
+            if not p:
+                sin_datos += 1
+            valores.append([p, q])
+        datos.append({"range": f"'{titulo}'!{desde}1:{hasta}{len(valores)}",
+                      "values": valores})
+        print(f"   {titulo}: {len(tels)} filas")
+
+    if datos:
+        reintentar(libro.values_batch_update,
+                   {"valueInputOption": "RAW", "data": datos})
+    filas = sum(len(d['values']) - 1 for d in datos)
+    print(f"\nCalificadas {filas - sin_datos}/{filas} filas en {len(datos)} hojas.")
+    if sin_datos:
+        print(f"   {sin_datos} sin calificar: el telefono no esta en el Excel "
+              f"(negocio borrado de la base o telefono editado a mano).")
+
+
 def demo():
     from modules.planilla import SIN_CONTACTAR
     df = pd.DataFrame([
@@ -138,5 +208,7 @@ def demo():
 if __name__ == "__main__":
     if '--test' in sys.argv:
         demo()
+    elif '--calificar' in sys.argv:
+        calificar_existentes()
     else:
         sincronizar()
