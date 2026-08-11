@@ -4,6 +4,8 @@ El telefono, la direccion y el tipo de negocio SOLO existen en la ficha, no en
 la tarjeta del listado. Se leen por atributo `data-item-id`, que no depende del
 idioma ni de las clases ofuscadas de Google.
 """
+import re
+
 from playwright.sync_api import Page
 
 from modules.db import place_id
@@ -29,6 +31,31 @@ def _texto(loc, timeout=1500):
     return ""
 
 
+def _resenas(panel):
+    """Cantidad de resenas, del panel y no de la tarjeta.
+
+    Salia de span.UY7F9 en la tarjeta del listado, clase que Maps dejo de usar:
+    quedo en 599 de 24450 negocios (2,4%) mientras el rating llenaba 88%. Es la
+    mejor senal que tenemos para calificar un lead, porque las resenas son lo
+    unico que mide cuanta gente entra de verdad al negocio.
+
+    OJO con span[aria-label*="reseña"]: tambien matchea el badge de cada
+    reseñador ("Local Guide · 26 reseñas"), y un negocio de 422 devolvia 26.
+
+    No siempre viene, y no es timing: Maps sirve dos variantes de la ficha, una
+    con el contador y otra sin (a los 4s de espera la segunda sigue mostrando
+    "4,9" pelado y sin pestaña de Reseñas). Esperar no cambia nada y costaria
+    2s por negocio, asi que se lee lo que este y el que no lo trae queda vacio.
+    """
+    txt = _texto(panel.locator('button[jsaction*="reviewChart"]'))
+    if txt:
+        m = re.search(r'([\d.,]+)', txt)
+    else:
+        # "5,0(71)": el contador pegado al rating, en el bloque del titulo.
+        m = re.search(r'\(([\d.,]+)\)', _texto(panel.locator('div.F7nice')))
+    return m.group(1).replace('.', '').replace(',', '') if m else ""
+
+
 def _leer_ficha(panel):
     """Lee los datos del panel abierto. Scopeado al panel del negocio correcto
     para no arrastrar el telefono de la ficha anterior si esta no cerro."""
@@ -49,7 +76,7 @@ def _leer_ficha(panel):
     if categoria.lower().startswith(('añadir', 'agregar', 'reclamar', 'sugerir')):
         categoria = ""
 
-    return telefono, direccion, web, categoria
+    return telefono, direccion, web, categoria, _resenas(panel)
 
 
 def extraer_negocios(page: Page, max_negocios=0, ya_tengo=frozenset()) -> list:
@@ -90,9 +117,8 @@ def extraer_negocios(page: Page, max_negocios=0, ya_tengo=frozenset()) -> list:
 
             tarjeta = page.locator(TARJETA).nth(i)
             rating = _texto(tarjeta.locator('span.MW4etd'))
-            resenas = _texto(tarjeta.locator('span.UY7F9')).strip('()').replace('.', '').replace(',', '')
 
-            telefono = direccion = web = categoria = ""
+            telefono = direccion = web = categoria = resenas = ""
             try:
                 enlace.first.click(timeout=5000)
                 # El panel de la ficha es un role=main con el nombre del negocio como
@@ -102,7 +128,7 @@ def extraer_negocios(page: Page, max_negocios=0, ya_tengo=frozenset()) -> list:
                 panel = page.get_by_role("main", name=nombre, exact=True)
                 panel.first.wait_for(state="visible", timeout=6000)
                 page.wait_for_timeout(400)
-                telefono, direccion, web, categoria = _leer_ficha(panel.first)
+                telefono, direccion, web, categoria, resenas = _leer_ficha(panel.first)
             except Exception:
                 pass
             finally:
