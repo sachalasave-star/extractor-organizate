@@ -12,18 +12,21 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from modules.clasificador import clasificar
+from modules.calificar import calificar
+from config.generar_busquedas import PRIORIDAD
 
 # Orden pensado para llamar: primero a quien llamas y a que numero, despues
 # donde esta y que tan grande es.
-COLUMNAS = ['nombre', 'telefono', 'categoria', 'ciudad', 'web', 'direccion',
-            'rating', 'resenas', 'url']
+COLUMNAS = ['prioridad', 'porque', 'nombre', 'telefono', 'categoria', 'ciudad',
+            'web', 'direccion', 'rating', 'resenas', 'url']
 TITULOS = {'rubro': 'Rubro', 'nicho': 'Nicho', 'nombre': 'Negocio',
            'telefono': 'Teléfono', 'categoria': 'Categoría', 'ciudad': 'Ciudad',
            'web': 'Sitio web', 'direccion': 'Dirección', 'rating': 'Puntaje',
-           'resenas': 'Reseñas', 'url': 'Link en Maps', 'motivo': 'Motivo del descarte'}
+           'resenas': 'Reseñas', 'url': 'Link en Maps', 'motivo': 'Motivo del descarte',
+           'prioridad': 'Prioridad', 'porque': 'Por qué'}
 ANCHOS = {'rubro': 20, 'nicho': 22, 'nombre': 42, 'telefono': 16, 'categoria': 26,
           'ciudad': 18, 'web': 32, 'direccion': 44, 'rating': 8, 'resenas': 9,
-          'url': 14, 'motivo': 40}
+          'url': 14, 'motivo': 40, 'prioridad': 10, 'porque': 34}
 
 
 def _nombre_hoja(texto, usados):
@@ -101,7 +104,17 @@ def exportar(con, archivo_salida="output/Organizate.xlsx",
             .drop(columns='_peso'))
     repetidos = antes - len(df)
     df['rubro'] = df['nicho'].map(lambda n: _rubro_de(n, mapa_rubro))
-    df = df.sort_values(['rubro', 'nicho', 'ciudad', 'nombre'])
+
+    # A quien llamar primero. La prioridad del nicho sale de generar_busquedas,
+    # que es donde ya decidiste que un gimnasio no vende turnos: sin esto los
+    # 8323 negocios de nichos apagados que se scrapearon antes de apagarlos
+    # siguen apareciendo en la planilla y los vendedores los llaman igual.
+    calif = df.apply(lambda f: calificar(PRIORIDAD.get(f['nicho'], 3), f['telefono'],
+                                         f['web'], f['resenas'], f['rating']), axis=1)
+    df['prioridad'] = [c[0] for c in calif]
+    df['porque'] = [c[1] for c in calif]
+
+    df = df.sort_values(['rubro', 'nicho', 'prioridad', 'ciudad', 'nombre'])
 
     os.makedirs(os.path.dirname(archivo_salida), exist_ok=True)
     usados, hojas = set(), []

@@ -9,12 +9,18 @@ import time
 # Columnas de la hoja de cada nicho, en orden. Las 5 primeras son las que se
 # usan llamando; el resto es contexto que se mira solo cuando hace falta.
 COLUMNAS = ['Negocio', 'Teléfono', 'Categoría', 'Vendedor', 'Estado', 'Motivo',
-            'Observaciones', 'Última gestión', 'Ciudad', 'Link en Maps']
-ANCHOS = [270, 120, 160, 110, 130, 170, 400, 115, 125, 90]
+            'Observaciones', 'Última gestión', 'Ciudad', 'Link en Maps',
+            # Prioridad y Por que van ULTIMAS y no donde se leerian mejor.
+            # Meterlas adelante correria una columna todo lo que ya cargaron
+            # los vendedores en las 45 hojas. Para verlas primero se arrastra
+            # la columna a mano en Sheets, que mueve los datos con ella.
+            'Prioridad', 'Por qué']
+ANCHOS = [270, 120, 160, 110, 130, 170, 400, 115, 125, 90, 90, 280]
 
 # De donde sale cada columna en el Excel generado. '' = la llena el vendedor.
 ORIGEN = {'Negocio': 'Negocio', 'Teléfono': 'Teléfono', 'Categoría': 'Categoría',
-          'Ciudad': 'Ciudad', 'Link en Maps': 'Link en Maps'}
+          'Ciudad': 'Ciudad', 'Link en Maps': 'Link en Maps',
+          'Prioridad': 'Prioridad', 'Por qué': 'Por qué'}
 
 CLAVE = 'Teléfono'
 
