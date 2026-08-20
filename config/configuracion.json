@@ -9,5 +9,8 @@
     "guardar_horarios": false,
     "eliminar_duplicados": true,
     "idioma": "es",
-    "tope_por_nicho": 2000
+    "tope_por_nicho": 2000,
+    "nichos_sin_tope": [
+        "Clínicas"
+    ]
 }

@@ -34,14 +34,19 @@ def _col(df, *nombres):
     return None
 
 
-def cargar_busquedas(ruta='config/busquedas.xlsx', ya_tengo=None, tope=0):
+def cargar_busquedas(ruta='config/busquedas.xlsx', ya_tengo=None, tope=0, sin_tope=()):
     """ya_tengo = {nicho: cuantos hay} y tope > 0 sacan de la cola los nichos
     que ya estan servidos.
 
     Es el freno de mano. Sin esto el scraper sigue cavando en Barberias (6829)
     mientras Opticas tiene 199, porque el orden del archivo manda y Barberias
     tiene mas busquedas. Con el tope, el nicho lleno desaparece de la cola y el
-    tiempo se va solo a los que faltan."""
+    tiempo se va solo a los que faltan.
+
+    sin_tope = nichos que siguen igual aunque pasen el tope. El tope nunca tira
+    un negocio ya scrapeado: solo decide que busquedas NUEVAS se lanzan. Pero
+    una busqueda ya encolada de un nicho lleno es trabajo que igual sirve, asi
+    que esta la lista para dejarla pasar."""
     df = pd.read_excel(ruta)
     c_nicho, c_busq = _col(df, 'nicho'), _col(df, 'busqueda')
     c_ciudad, c_activo = _col(df, 'ciudad', 'zona'), _col(df, 'activo')
@@ -53,7 +58,8 @@ def cargar_busquedas(ruta='config/busquedas.xlsx', ya_tengo=None, tope=0):
         df = df[df[c_activo].astype(str).str.strip().str.lower().isin(AFIRMATIVOS)]
 
     if tope and ya_tengo:
-        llenos = {n for n, c in ya_tengo.items() if c >= tope}
+        libres = {str(n).strip() for n in sin_tope}
+        llenos = {n for n, c in ya_tengo.items() if c >= tope and n not in libres}
         frenados = df[c_nicho].astype(str).str.strip().isin(llenos)
         if frenados.any():
             print(f"{len(llenos)} nichos llegaron al tope de {tope} y quedan "
@@ -92,9 +98,11 @@ def ejecutar_scraper(solo=None, reanudar=True, minutos_max=0):
     headless = bool(cfg.get('headless', False))
     limite = time.monotonic() + minutos_max * 60 if minutos_max else None
     tope = int(cfg.get('tope_por_nicho', 0))
+    sin_tope = cfg.get('nichos_sin_tope', [])
 
     con = db.conectar()
-    busquedas = cargar_busquedas(ya_tengo=db.por_nicho(con), tope=tope)
+    busquedas = cargar_busquedas(ya_tengo=db.por_nicho(con), tope=tope,
+                                 sin_tope=sin_tope)
     if solo:
         busquedas = busquedas[:solo]
     if not busquedas:
@@ -183,8 +191,12 @@ def demo():
     # El termino tiene que seguir armandose igual para no rehacer lo ya buscado.
     assert cargar_busquedas(ruta, tengo, tope=2000)[0]['termino'] == 'óptica en Rosario, Argentina'
 
+    # La lista de exentos deja pasar al lleno sin aflojar el tope para el resto.
+    assert nichos(cargar_busquedas(ruta, tengo, 2000, ['Barberías'])) == {'Barberías', 'Ópticas'}
+    assert nichos(cargar_busquedas(ruta, tengo, 2000, [' Barberías '])) == {'Barberías', 'Ópticas'},         'no aguanta espacios de mas en la config'
+
     os.remove(ruta)
-    print('OK  tope: frena al nicho lleno y deja pasar al que falta')
+    print('OK  tope: frena al lleno, deja pasar al flaco y respeta los exentos')
 
 
 if __name__ == "__main__":
