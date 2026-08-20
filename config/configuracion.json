@@ -8,5 +8,6 @@
     "guardar_direccion": true,
     "guardar_horarios": false,
     "eliminar_duplicados": true,
-    "idioma": "es"
+    "idioma": "es",
+    "tope_por_nicho": 2000
 }

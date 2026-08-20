@@ -34,7 +34,14 @@ def _col(df, *nombres):
     return None
 
 
-def cargar_busquedas(ruta='config/busquedas.xlsx'):
+def cargar_busquedas(ruta='config/busquedas.xlsx', ya_tengo=None, tope=0):
+    """ya_tengo = {nicho: cuantos hay} y tope > 0 sacan de la cola los nichos
+    que ya estan servidos.
+
+    Es el freno de mano. Sin esto el scraper sigue cavando en Barberias (6829)
+    mientras Opticas tiene 199, porque el orden del archivo manda y Barberias
+    tiene mas busquedas. Con el tope, el nicho lleno desaparece de la cola y el
+    tiempo se va solo a los que faltan."""
     df = pd.read_excel(ruta)
     c_nicho, c_busq = _col(df, 'nicho'), _col(df, 'busqueda')
     c_ciudad, c_activo = _col(df, 'ciudad', 'zona'), _col(df, 'activo')
@@ -44,6 +51,14 @@ def cargar_busquedas(ruta='config/busquedas.xlsx'):
 
     if c_activo:
         df = df[df[c_activo].astype(str).str.strip().str.lower().isin(AFIRMATIVOS)]
+
+    if tope and ya_tengo:
+        llenos = {n for n, c in ya_tengo.items() if c >= tope}
+        frenados = df[c_nicho].astype(str).str.strip().isin(llenos)
+        if frenados.any():
+            print(f"{len(llenos)} nichos llegaron al tope de {tope} y quedan "
+                  f"afuera: {', '.join(sorted(llenos))}")
+            df = df[~frenados]
 
     filas = []
     for _, f in df.iterrows():
@@ -76,15 +91,18 @@ def ejecutar_scraper(solo=None, reanudar=True, minutos_max=0):
     max_res = int(cfg.get('max_resultados_por_busqueda', 10000))
     headless = bool(cfg.get('headless', False))
     limite = time.monotonic() + minutos_max * 60 if minutos_max else None
+    tope = int(cfg.get('tope_por_nicho', 0))
 
-    busquedas = cargar_busquedas()
+    con = db.conectar()
+    busquedas = cargar_busquedas(ya_tengo=db.por_nicho(con), tope=tope)
     if solo:
         busquedas = busquedas[:solo]
     if not busquedas:
-        print("No hay busquedas activas en config/busquedas.xlsx")
+        print(f"Nada que hacer: todos los nichos activos llegaron al tope de "
+              f"{tope}. Apaga el workflow." if tope else
+              "No hay busquedas activas en config/busquedas.xlsx")
+        con.close()
         return
-
-    con = db.conectar()
     print(f"{len(busquedas)} busquedas activas | {db.total(con)} negocios ya en la base\n")
 
     with sync_playwright() as p:
@@ -140,6 +158,35 @@ def ejecutar_scraper(solo=None, reanudar=True, minutos_max=0):
     con.close()
 
 
+def demo():
+    """El tope es la unica logica nueva: que saque al nicho lleno y no toque al
+    flaco. Si esto se rompe, el scraper vuelve a cavar en Barberias para siempre."""
+    import os
+    ruta = 'output/_tope_test.xlsx'
+    pd.DataFrame([
+        {'Rubro': 'Estética y belleza', 'Nicho': 'Barberías', 'Busqueda': 'barbería',
+         'Ciudad': 'Rosario', 'Activo': 'Si'},
+        {'Rubro': 'Otros servicios', 'Nicho': 'Ópticas', 'Busqueda': 'óptica',
+         'Ciudad': 'Rosario', 'Activo': 'Si'},
+        {'Rubro': 'Deporte y movimiento', 'Nicho': 'Gimnasios', 'Busqueda': 'gym',
+         'Ciudad': 'Rosario', 'Activo': 'No'},
+    ]).to_excel(ruta, index=False)
+    tengo = {'Barberías': 6829, 'Ópticas': 199}
+
+    nichos = lambda r: {b['nicho'] for b in r}
+    assert nichos(cargar_busquedas(ruta)) == {'Barberías', 'Ópticas'}, 'Activo=No no filtro'
+    assert nichos(cargar_busquedas(ruta, tengo, tope=2000)) == {'Ópticas'},         'el tope no saco a Barberías'
+    # tope=0 es "sin freno": tiene que dejar todo como estaba.
+    assert nichos(cargar_busquedas(ruta, tengo, tope=0)) == {'Barberías', 'Ópticas'}
+    # Justo en el numero ya cuenta como lleno, si no nunca frena.
+    assert nichos(cargar_busquedas(ruta, {'Ópticas': 2000}, tope=2000)) == {'Barberías'}
+    # El termino tiene que seguir armandose igual para no rehacer lo ya buscado.
+    assert cargar_busquedas(ruta, tengo, tope=2000)[0]['termino'] == 'óptica en Rosario, Argentina'
+
+    os.remove(ruta)
+    print('OK  tope: frena al nicho lleno y deja pasar al que falta')
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Scraper de Google Maps")
@@ -147,5 +194,9 @@ if __name__ == "__main__":
                     help="cortar limpio despues de N minutos (0 = sin limite)")
     ap.add_argument('--solo', type=int, default=None,
                     help="procesar solo las primeras N busquedas")
+    ap.add_argument('--test', action='store_true', help="correr el check del tope")
     args = ap.parse_args()
-    ejecutar_scraper(solo=args.solo, minutos_max=args.minutos)
+    if args.test:
+        demo()
+    else:
+        ejecutar_scraper(solo=args.solo, minutos_max=args.minutos)
