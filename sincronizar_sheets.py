@@ -20,7 +20,7 @@ import sys
 import pandas as pd
 
 from modules.planilla import (COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, IDX,
-                              col_letra, fila_desde, reintentar)
+                              col_letra, fila_desde, reintentar, TRANSITORIOS)
 from modules.telefono import canonico
 
 GENERADO = "output/Organizate.xlsx"
@@ -56,7 +56,11 @@ def _abrir_libro():
         sys.exit("Falta gspread: pip install gspread google-auth")
     cred = Credentials.from_service_account_info(
         _credenciales(), scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    return gspread.authorize(cred).open_by_key(_sheet_id())
+    cliente = gspread.authorize(cred)
+    # Abrir el libro es la unica llamada a Google que no estaba adentro de un
+    # reintentar: un 503 justo aca (paso el 20/8) tiraba abajo la sync entera
+    # y ninguna fila nueva llegaba a la planilla esa corrida.
+    return reintentar(cliente.open_by_key, _sheet_id())
 
 
 def nuevos_por_nicho(df, ya_cargados):

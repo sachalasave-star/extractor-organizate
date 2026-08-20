@@ -59,17 +59,23 @@ def col_letra(i):
     return chr(ord('A') + i)
 
 
+TRANSITORIOS = ('429', '500', '502', '503', '504')
+
+
 def reintentar(fn, *a, **kw):
-    """Sheets corta a las 60 lecturas y 60 escrituras por minuto. Espera y
-    sigue en vez de dejar la planilla a medio armar o a medio sincronizar."""
+    """Sheets corta a las 60 lecturas y 60 escrituras por minuto (429), y de vez
+    en cuando el servicio responde 503 aunque no haya limite de por medio.
+    Espera y sigue en vez de dejar la planilla a medio armar o a medio
+    sincronizar. La corrida del 20/8 perdio 4290 negocios nuevos porque un 503
+    justo al abrir el libro tiraba abajo la sincronizacion entera."""
     for intento in range(6):
         try:
             return fn(*a, **kw)
         except Exception as e:
-            if '429' not in str(e) or intento == 5:
+            if not any(c in str(e) for c in TRANSITORIOS) or intento == 5:
                 raise
             espera = 30 * (intento + 1)
-            print(f"   (limite de Google, esperando {espera}s)")
+            print(f"   (Google no respondio, esperando {espera}s)")
             time.sleep(espera)
 
 
