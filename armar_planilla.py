@@ -243,20 +243,6 @@ def _formulas_panel(nichos):
     No se puede usar INDIRECT sobre un array: Sheets lo evalua solo con el
     primer elemento y el total daba el de la primera hoja (818 en vez de 7391).
     """
-    def por_estado(estado):
-        return "=" + "+".join(
-            f"COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"{estado}\")" for n in nichos)
-
-    def total_leads():
-        # "?*" = al menos un caracter. COUNTA contaria tambien las celdas con
-        # cadena vacia que quedan al crear la fila, y daba 7391 asignados.
-        return "=" + "+".join(
-            f"COUNTIF('{n}'!{COL_TELEFONO}2:{COL_TELEFONO},\"?*\")" for n in nichos)
-
-    def asignados():
-        return "=" + "+".join(
-            f"COUNTIF('{n}'!{COL_VENDEDOR}2:{COL_VENDEDOR},\"?*\")" for n in nichos)
-
     def por_motivo(motivo):
         return "=" + "+".join(
             f"COUNTIF('{n}'!{COL_MOTIVO}2:{COL_MOTIVO},\"{motivo}\")" for n in nichos)
@@ -273,7 +259,7 @@ def _formulas_panel(nichos):
                 partes.append(f"COUNTIF({v})")
         return f'=IF($A{fila}="","",' + "+".join(partes) + ")"
 
-    return por_estado, total_leads, asignados, por_motivo, del_vendedor
+    return por_motivo, del_vendedor
 
 
 def _hoja_panel(libro, nichos):
@@ -285,18 +271,18 @@ def _hoja_panel(libro, nichos):
     # cols=16: A-H son la hoja visible, J-O son un staging area escondida (ver
     # mas abajo por que hace falta).
     h = reintentar(libro.add_worksheet, title=PANEL, rows=80, cols=16, index=1)
-    por_estado, total_leads, asignados, por_motivo, del_vendedor = _formulas_panel(nichos)
+    por_motivo, del_vendedor = _formulas_panel(nichos)
 
     f = []                                   # filas, 0-based mientras se arma
     f.append(["PANEL DE VENTAS"] + [""] * 7)
     f.append(['=CONCATENATE("Actualizado: ",TEXT(TODAY(),"dd/mm/yyyy"))'] + [""] * 7)
     f.append([""] * 8)
 
-    F_EMBUDO = len(f)
-    f.append(["TOTALES DEL EMBUDO"] + [""] * 7)
-    f.append(["Leads totales", "Asignados"] + NOMBRES_ESTADO)
-    f.append([total_leads(), asignados()] + [por_estado(e) for e in NOMBRES_ESTADO])
-    f.append([""] * 8)
+    # Sin totales del embudo a proposito: "Leads totales" y "Asignados" son
+    # justo los dos numeros que juntos dicen "faltan 70000 negocios y solo
+    # hay 30 asignados". El ranking de abajo ya muestra quien esta activo, y
+    # el detalle por nicho esta en Resumen; esto solo sumaba todo en una
+    # linea grande y fea.
 
     # RANKING: no alcanza con listar a los vendedores en el orden de Config,
     # eso es una tabla, no un ranking. Las metricas de cada uno se calculan en
@@ -422,20 +408,7 @@ def _hoja_panel(libro, nichos):
                 "italic": True, "fontSize": 9, "fontFamily": FUENTE,
                 "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
             "fields": "userEnteredFormat.textFormat"}},
-        titulo(F_EMBUDO), titulo(F_RANKING), titulo(F_MOTIVOS), titulo(F_AYUDA),
-        # Numeros grandes del embudo
-        {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": F_EMBUDO + 2,
-                      "endRowIndex": F_EMBUDO + 3, "startColumnIndex": 0, "endColumnIndex": 8},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": _rgb(gris_claro),
-                "horizontalAlignment": "CENTER",
-                "textFormat": {"bold": True, "fontSize": 15, "fontFamily": FUENTE}}},
-            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": h.id, "dimension": "ROWS",
-                      "startIndex": F_EMBUDO + 2, "endIndex": F_EMBUDO + 3},
-            "properties": {"pixelSize": 40}, "fields": "pixelSize"}},
+        titulo(F_RANKING), titulo(F_MOTIVOS), titulo(F_AYUDA),
         numeros(F_RANKING + 2, fin_rank, 1, 6),
         # Subtitulo de motivos, mismo estilo italic/chico que el de Resumen
         {"repeatCell": {
@@ -499,7 +472,6 @@ def _hoja_panel(libro, nichos):
             "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 8},
             "properties": {"pixelSize": 145}, "fields": "pixelSize"}},
     ]
-    reqs += encabezado(F_EMBUDO + 1, 8)
     reqs += encabezado(F_RANKING + 1, 6)
     for i in range(0, len(reqs), 150):
         reintentar(libro.batch_update, {"requests": reqs[i:i + 150]})
@@ -904,6 +876,12 @@ def _probar_hoja_panel():
         f'MAX y MATCH no miran el mismo rango que el staging: {dominante}'
     assert all(f'"{m}"' in dominante for m in MOTIVOS), f'falta un motivo: {dominante}'
     assert "Cantidad" not in str(h.escrituras), 'quedo la columna Cantidad a la vista'
+
+    # Sin el embudo con totales absolutos: es el numero que dice de un vistazo
+    # "faltan 70000 negocios y solo hay 30 asignados".
+    texto = str(h.escrituras)
+    assert "TOTALES DEL EMBUDO" not in texto, 'el embudo con los totales sigue ahi'
+    assert "Leads totales" not in texto, 'el total de leads sigue a la vista'
 
     # El staging tiene que estar escondido, si no todo esto era para nada.
     ocultos = [r for b in libro.batches for r in b['requests']
