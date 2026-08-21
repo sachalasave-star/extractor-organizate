@@ -47,6 +47,7 @@ MOTIVOS = ['No atiende', 'Número equivocado', 'Precio alto', 'Ya tiene sistema'
 CONFIG = '⚙️ Config'
 PANEL = '📊 Panel de ventas'
 RESUMEN = '📁 Resumen por nicho'
+RANKING = '🏆 Ranking (interno)'
 
 # Filas de Config donde viven las listas (1-based, como las ve el usuario)
 FILA_VENDEDORES = 3          # A3 hacia abajo

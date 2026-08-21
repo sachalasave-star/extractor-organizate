@@ -13,7 +13,7 @@ import sys
 import pandas as pd
 
 from modules.planilla import (COLUMNAS, ANCHOS, CLAVE, VENDEDORES, ESTADOS,
-                              NOMBRES_ESTADO, MOTIVOS, CONFIG, PANEL, RESUMEN,
+                              NOMBRES_ESTADO, MOTIVOS, CONFIG, PANEL, RESUMEN, RANKING,
                               FILA_VENDEDORES, FILA_ESTADOS, FILA_MOTIVOS,
                               COL_VENDEDOR, COL_ESTADO, COL_MOTIVO, COL_FECHA,
                               COL_TELEFONO, IDX, fila_desde,
@@ -237,6 +237,22 @@ def _hoja_config(libro):
     reintentar(libro.batch_update, {"requests": reqs})
     return h
 
+def _ocultar(libro, *sheet_ids):
+    """Esconde estas hojas de la vista por defecto.
+
+    No borra nada: formulas y datos siguen ahi, editables, para quien las
+    busque a proposito (Ver > Hojas ocultas). Lo que cambia es que un
+    vendedor nuevo que abre la planilla no aterriza en "quien de los cuatro
+    no llamo nada esta semana". Se rehace en cada armar()/poner_al_dia(), asi
+    que si alguien destapo una de estas para mirarla, el proximo rearmado la
+    vuelve a esconder solo.
+    """
+    reintentar(libro.batch_update, {"requests": [
+        {"updateSheetProperties": {
+            "properties": {"sheetId": sid, "hidden": True},
+            "fields": "hidden"}} for sid in sheet_ids]})
+
+
 def _formulas_panel(nichos):
     """Devuelve helpers que suman una hoja por vez.
 
@@ -248,146 +264,104 @@ def _formulas_panel(nichos):
             f"COUNTIF('{n}'!{COL_MOTIVO}2:{COL_MOTIVO},\"{motivo}\")" for n in nichos)
 
     def del_vendedor(fila, estado=None, hoy=False):
+        # $J{fila} y no $A{fila}: A es el SPILL del SORT/FILTER que lee este
+        # mismo rango J:O. Referenciar A crea una dependencia circular (A
+        # depende de J:O, y J:O dependia de A) y Sheets devolvia #REF! en las
+        # seis columnas del ranking apenas se armaba contra datos reales; el
+        # test con libro falso no lo agarraba porque solo compara el TEXTO de
+        # la formula, no la evalua de verdad. J{fila} tiene el mismo nombre de
+        # vendedor (viene de Config, en esta misma fila), sin el circulo.
         partes = []
         for n in nichos:
-            v = f"'{n}'!{COL_VENDEDOR}2:{COL_VENDEDOR},$A{fila}"
+            v = f"'{n}'!{COL_VENDEDOR}2:{COL_VENDEDOR},$J{fila}"
             if estado:
                 partes.append(f"COUNTIFS({v},'{n}'!{COL_ESTADO}2:{COL_ESTADO},\"{estado}\")")
             elif hoy:
                 partes.append(f"COUNTIFS({v},'{n}'!{COL_FECHA}2:{COL_FECHA},TODAY())")
             else:
                 partes.append(f"COUNTIF({v})")
-        return f'=IF($A{fila}="","",' + "+".join(partes) + ")"
+        return f'=IF($J{fila}="","",' + "+".join(partes) + ")"
 
-    return por_motivo, del_vendedor
+    def agregado(estado, invertir=False):
+        """% de TODOS los nichos juntos para este estado, nunca el numero de
+        leads en crudo. Es el embudo que e8f0d29 le saco al Panel, pero como
+        porcentaje del equipo entero en vez del numero que expone la escala."""
+        leads = "+".join(
+            f"COUNTIF('{n}'!{COL_TELEFONO}2:{COL_TELEFONO},\"?*\")" for n in nichos)
+        cuenta = "+".join(
+            f"COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"{estado}\")" for n in nichos)
+        numerador = f"(({leads})-({cuenta}))" if invertir else f"({cuenta})"
+        return f'=IFERROR({numerador}/({leads}),"")'
+
+    return por_motivo, del_vendedor, agregado
 
 
 def _hoja_panel(libro, nichos):
-    """Panel de ventas: embudo, ranking de vendedores y motivos de no avance."""
+    """Panel de bienvenida: solo porcentajes de equipo, nada por vendedor.
+
+    Antes esta hoja era ademas el ranking por vendedor, y esconderla entera
+    (ver _ocultar) dejaba a Config como la primera pestaña visible al abrir
+    el libro, que es una bienvenida tan mala como el embudo con los totales
+    que ya se le saco (e8f0d29). Ahora el Panel se queda VISIBLE y de
+    primero (index=0): solo metricas de equipo, nunca un total en crudo ni
+    una comparacion entre vendedores. El detalle por vendedor -numeros
+    reales, hace falta para liquidar comisiones- se movio a la hoja
+    Ranking (interno), que esa si queda escondida (ver _ocultar).
+    """
     try:
         reintentar(libro.del_worksheet, libro.worksheet(PANEL))
     except Exception:
         pass
-    # cols=16: A-H son la hoja visible, J-O son un staging area escondida (ver
-    # mas abajo por que hace falta).
-    h = reintentar(libro.add_worksheet, title=PANEL, rows=80, cols=16, index=1)
-    por_motivo, del_vendedor = _formulas_panel(nichos)
+    # cols=10: A-H son las 8 columnas visibles, J (columna 10) es el staging
+    # escondido del motivo dominante.
+    h = reintentar(libro.add_worksheet, title=PANEL, rows=30, cols=10, index=0)
+    por_motivo, _, agregado = _formulas_panel(nichos)
 
-    f = []                                   # filas, 0-based mientras se arma
-    f.append(["PANEL DE VENTAS"] + [""] * 7)
-    f.append(['=CONCATENATE("Actualizado: ",TEXT(TODAY(),"dd/mm/yyyy"))'] + [""] * 7)
-    f.append([""] * 8)
+    fila_m1 = 10        # 1-based: fila donde va la formula visible del motivo
+    # (fila 1 titulo, 2 subtitulo, 3 blanco, 4 "COMO VA EL EQUIPO", 5-6 metricas,
+    # 7 blanco, 8 "MOTIVOS DE NO AVANCE", 9 subtitulo, 10 = esta formula)
+    filas = [
+        ["PANEL DE VENTAS"] + [""] * 7,
+        ['=CONCATENATE("Actualizado: ",TEXT(TODAY(),"dd/mm/yyyy"))'] + [""] * 7,
+        [""] * 8,
+        ["CÓMO VA EL EQUIPO"] + [""] * 7,
+        ["% contactado", "% en seguimiento", "% con demo iniciada", "% clientes activos"] + [""] * 4,
+        [agregado("Sin contactar", invertir=True), agregado("Le interesó"),
+         agregado("Demo iniciada"), agregado("Cliente activo")] + [""] * 4,
+        [""] * 8,
+        ["MOTIVOS DE NO AVANCE"] + [""] * 7,
+        ["El que más frena, no la lista completa."] + [""] * 7,
+        [f'=IFERROR(INDEX({{"' + '";"'.join(MOTIVOS) + f'"}},MATCH(MAX(J{fila_m1}:J{fila_m1 + len(MOTIVOS) - 1}),'
+         f'J{fila_m1}:J{fila_m1 + len(MOTIVOS) - 1},0)),"Sin datos aún")'] + [""] * 7,
+        [""] * 8,
+        ["CÓMO USARLO"] + [""] * 7,
+        ["• Los desplegables (Vendedor / Estado / Motivo) salen de la hoja Config."] + [""] * 7,
+        [f"• Agregá o quitá un vendedor en Config columna A y se actualiza en las {len(nichos)} hojas."] + [""] * 7,
+        ["• El detalle por vendedor está en Ranking (interno): clic derecho en las pestañas > Mostrar hojas ocultas."] + [""] * 7,
+        ["• El detalle por nicho está en la hoja Resumen por nicho."] + [""] * 7,
+    ]
+    assert filas[9][0].startswith('=IFERROR(INDEX('), 'la fila del motivo dominante se desalineo'
+    reintentar(h.update, values=filas, range_name="A1", value_input_option="USER_ENTERED")
 
-    # Sin totales del embudo a proposito: "Leads totales" y "Asignados" son
-    # justo los dos numeros que juntos dicen "faltan 70000 negocios y solo
-    # hay 30 asignados". El ranking de abajo ya muestra quien esta activo, y
-    # el detalle por nicho esta en Resumen; esto solo sumaba todo en una
-    # linea grande y fea.
-
-    # RANKING: no alcanza con listar a los vendedores en el orden de Config,
-    # eso es una tabla, no un ranking. Las metricas de cada uno se calculan en
-    # J:O (escondida) y A:F se arma con UN solo SORT(FILTER(...)) que ordena
-    # por Leads asignados de mayor a menor y descarta los slots sin vendedor.
-    # Asi arriba queda el mas activo y abajo el menos activo, sin filas
-    # vacias de relleno.
-    F_RANKING = len(f)
-    f.append(["RANKING DE VENDEDORES"] + [""] * 7)
-    f.append(["Vendedor", "Leads asignados", "Demos iniciadas", "Clientes activos",
-              "% conversión", "Trabajados hoy", "", ""])
-    fila_r1 = len(f) + 1                     # primera fila de datos, 1-based
-    fila_r2 = fila_r1 + FILAS_RANKING - 1
-    f.append([f'=IFERROR(SORT(FILTER(J{fila_r1}:O{fila_r2},J{fila_r1}:J{fila_r2}<>""),2,FALSE),'
-              f'"Cargá vendedores en Config")'] + [""] * 7)
-    for _ in range(FILAS_RANKING - 1):       # el resto lo llena el spill del SORT
-        f.append([""] * 8)
-    f.append([""] * 8)
-
-    F_MOTIVOS = len(f)
-    f.append(["MOTIVOS DE NO AVANCE"] + [""] * 7)
-    f.append(["El que más frena, no la lista completa."] + [""] * 7)
-    fila_m1 = len(f) + 1
-    fila_m2 = fila_m1 + len(MOTIVOS) - 1
-    rango_motivos = f"J{fila_m1}:J{fila_m2}"
-    nombres = "{" + ";".join(f'"{m}"' for m in MOTIVOS) + "}"
-    f.append([f'=IFERROR(INDEX({nombres},MATCH(MAX({rango_motivos}),{rango_motivos},0)),'
-              f'"Sin datos aún")'] + [""] * 7)
-    f.append([""] * 8)
-
-    F_AYUDA = len(f)
-    f.append(["CÓMO USARLO"] + [""] * 7)
-    for t in ["Los desplegables (Vendedor / Estado / Motivo) salen de la hoja Config.",
-              f"Agregá o quitá un vendedor en Config columna A y se actualiza en las {len(nichos)} hojas.",
-              "El teléfono está en formato texto: conserva los ceros iniciales.",
-              'Cargá la fecha en "Última gestión" para que cuente en Trabajados hoy.',
-              "El resto se calcula solo. Sin macros: anda igual en Sheets y en Excel.",
-              "El detalle por nicho está en la hoja Resumen por nicho."]:
-        f.append(["• " + t] + [""] * 7)
-
-    reintentar(h.update, values=f, range_name="A1", value_input_option="USER_ENTERED")
-
-    # Staging escondido: las mismas cuentas por vendedor que antes iban directo
-    # en A:F, ahora en J:O para que SORT(FILTER(...)) las ordene sin que nadie
-    # vea la tabla cruda. Mismo criterio para el motivo dominante: MAX/MATCH
-    # necesitan un rango de numeros, no se puede armar sobre formulas sueltas.
-    staging_ranking = []
-    for i in range(FILAS_RANKING):
-        fila = fila_r1 + i
-        staging_ranking.append([
-            f"=IFERROR('{CONFIG}'!A{FILA_VENDEDORES + i},\"\")",
-            del_vendedor(fila),
-            del_vendedor(fila, "Demo iniciada"),
-            del_vendedor(fila, "Cliente activo"),
-            f'=IF(N(K{fila})=0,"",M{fila}/K{fila})',
-            del_vendedor(fila, hoy=True)])
-    reintentar(h.update, values=staging_ranking, range_name=f"J{fila_r1}",
-              value_input_option="USER_ENTERED")
-
-    staging_motivos = [[por_motivo(m)] for m in MOTIVOS]
-    reintentar(h.update, values=staging_motivos, range_name=f"J{fila_m1}",
-              value_input_option="USER_ENTERED")
+    # Staging escondido solo para el motivo dominante: MAX/MATCH necesitan un
+    # rango de numeros, no se puede armar sobre formulas sueltas.
+    staging = [[por_motivo(m)] for m in MOTIVOS]
+    reintentar(h.update, values=staging, range_name=f"J{fila_m1}", value_input_option="USER_ENTERED")
 
     azul, azul_claro = hex_a_rgb('#1D4E89'), hex_a_rgb('#EAF0F8')
     gris_claro = hex_a_rgb('#F1F3F4')
 
-    def titulo(fila, tam=12):
+    def titulo(fila):
         return {"repeatCell": {
             "range": {"sheetId": h.id, "startRowIndex": fila, "endRowIndex": fila + 1},
             "cell": {"userEnteredFormat": {"textFormat": {
-                "bold": True, "fontSize": tam, "fontFamily": FUENTE,
+                "bold": True, "fontSize": 12, "fontFamily": FUENTE,
                 "foregroundColor": _rgb(azul)}}},
             "fields": "userEnteredFormat.textFormat"}}
 
-    def encabezado(fila, hasta):
-        return [{"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": fila, "endRowIndex": fila + 1,
-                      "startColumnIndex": 0, "endColumnIndex": hasta},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": _rgb(azul),
-                "textFormat": {"bold": True, "fontSize": TAM_ENCABEZADO, "fontFamily": FUENTE,
-                               "foregroundColor": _rgb(hex_a_rgb(BLANCO))},
-                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
-                "wrapStrategy": "WRAP"}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,"
-                      "verticalAlignment,wrapStrategy)"}},
-            {"updateDimensionProperties": {
-                "range": {"sheetId": h.id, "dimension": "ROWS",
-                          "startIndex": fila, "endIndex": fila + 1},
-                "properties": {"pixelSize": 34}, "fields": "pixelSize"}}]
-
-    def numeros(desde, hasta, col_ini, col_fin, tam=11):
-        return {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": desde, "endRowIndex": hasta,
-                      "startColumnIndex": col_ini, "endColumnIndex": col_fin},
-            "cell": {"userEnteredFormat": {
-                "horizontalAlignment": "CENTER",
-                "textFormat": {"bold": True, "fontSize": tam, "fontFamily": FUENTE}}},
-            "fields": "userEnteredFormat(horizontalAlignment,textFormat)"}}
-
-    fin_rank = F_RANKING + 2 + FILAS_RANKING
-    reqs = [
-        # Base tipografica de toda la hoja
+    reintentar(libro.batch_update, {"requests": [
         {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": 80},
+            "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": len(filas)},
             "cell": {"userEnteredFormat": {
                 "textFormat": {"fontFamily": FUENTE, "fontSize": TAM_DATOS,
                                "foregroundColor": _rgb(hex_a_rgb(TINTA))},
@@ -408,55 +382,59 @@ def _hoja_panel(libro, nichos):
                 "italic": True, "fontSize": 9, "fontFamily": FUENTE,
                 "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
             "fields": "userEnteredFormat.textFormat"}},
-        titulo(F_RANKING), titulo(F_MOTIVOS), titulo(F_AYUDA),
-        numeros(F_RANKING + 2, fin_rank, 1, 6),
-        # Subtitulo de motivos, mismo estilo italic/chico que el de Resumen
+        titulo(3), titulo(7), titulo(11),
+        # Encabezado de las 4 metricas (fila 4)
         {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": F_MOTIVOS + 1, "endRowIndex": F_MOTIVOS + 2},
+            "range": {"sheetId": h.id, "startRowIndex": 4, "endRowIndex": 5,
+                      "startColumnIndex": 0, "endColumnIndex": 4},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(azul),
+                "textFormat": {"bold": True, "fontSize": TAM_ENCABEZADO, "fontFamily": FUENTE,
+                               "foregroundColor": _rgb(hex_a_rgb(BLANCO))},
+                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "WRAP"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,"
+                      "verticalAlignment,wrapStrategy)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "ROWS", "startIndex": 4, "endIndex": 5},
+            "properties": {"pixelSize": 34}, "fields": "pixelSize"}},
+        # Los 4 numeros grandes, como porcentaje de verdad (fila 5)
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 5, "endRowIndex": 6,
+                      "startColumnIndex": 0, "endColumnIndex": 4},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(gris_claro),
+                "horizontalAlignment": "CENTER",
+                "numberFormat": {"type": "PERCENT", "pattern": "0.0%"},
+                "textFormat": {"bold": True, "fontSize": 20, "fontFamily": FUENTE}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,numberFormat,textFormat)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "ROWS", "startIndex": 5, "endIndex": 6},
+            "properties": {"pixelSize": 44}, "fields": "pixelSize"}},
+        # Subtitulo de motivos (fila 8) y el motivo dominante (fila 9)
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 8, "endRowIndex": 9},
             "cell": {"userEnteredFormat": {"textFormat": {
                 "italic": True, "fontSize": 9, "fontFamily": FUENTE,
                 "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
             "fields": "userEnteredFormat.textFormat"}},
-        # El motivo dominante, destacado como los numeros grandes del embudo
         {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": F_MOTIVOS + 2,
-                      "endRowIndex": F_MOTIVOS + 3, "startColumnIndex": 0, "endColumnIndex": 8},
+            "range": {"sheetId": h.id, "startRowIndex": 9, "endRowIndex": 10,
+                      "startColumnIndex": 0, "endColumnIndex": 8},
             "cell": {"userEnteredFormat": {
                 "backgroundColor": _rgb(gris_claro),
                 "textFormat": {"bold": True, "fontSize": 14, "fontFamily": FUENTE}}},
             "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
         {"updateDimensionProperties": {
-            "range": {"sheetId": h.id, "dimension": "ROWS",
-                      "startIndex": F_MOTIVOS + 2, "endIndex": F_MOTIVOS + 3},
+            "range": {"sheetId": h.id, "dimension": "ROWS", "startIndex": 9, "endIndex": 10},
             "properties": {"pixelSize": 40}, "fields": "pixelSize"}},
-        # J:O son el staging del ranking y del motivo dominante: no es para
-        # que lo vea nadie, solo para que SORT/MATCH tengan un rango de donde leer.
+        # J es el staging del motivo dominante: no es para que lo vea nadie.
         {"updateDimensionProperties": {
-            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 9, "endIndex": 15},
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 9, "endIndex": 10},
             "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}},
-        # % conversion como porcentaje de verdad
+        # Ayuda en gris chico (filas 12-15)
         {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": F_RANKING + 2, "endRowIndex": fin_rank,
-                      "startColumnIndex": 4, "endColumnIndex": 5},
-            "cell": {"userEnteredFormat": {
-                "numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-            "fields": "userEnteredFormat.numberFormat"}},
-        # Nombres de vendedor a la izquierda y en negrita
-        {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": F_RANKING + 2, "endRowIndex": fin_rank,
-                      "startColumnIndex": 0, "endColumnIndex": 1},
-            "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontFamily": FUENTE}}},
-            "fields": "userEnteredFormat.textFormat"}},
-        # Barra proporcional en clientes activos: el ranking se lee de un vistazo
-        {"addConditionalFormatRule": {"index": 0, "rule": {
-            "ranges": [{"sheetId": h.id, "startRowIndex": F_RANKING + 2, "endRowIndex": fin_rank,
-                        "startColumnIndex": 3, "endColumnIndex": 4}],
-            "gradientRule": {
-                "minpoint": {"color": _rgb(hex_a_rgb('#FFFFFF')), "type": "NUMBER", "value": "0"},
-                "maxpoint": {"color": _rgb(hex_a_rgb('#34A853')), "type": "MAX"}}}}},
-        # Ayuda en gris chico: esta para consultarla, no para leerla siempre
-        {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": F_AYUDA + 1, "endRowIndex": F_AYUDA + 8},
+            "range": {"sheetId": h.id, "startRowIndex": 12, "endRowIndex": len(filas)},
             "cell": {"userEnteredFormat": {"textFormat": {
                 "fontSize": 9, "fontFamily": FUENTE,
                 "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
@@ -466,43 +444,158 @@ def _hoja_panel(libro, nichos):
                            "gridProperties": {"hideGridlines": True}},
             "fields": "tabColor,gridProperties.hideGridlines"}},
         {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 4},
+            "properties": {"pixelSize": 170}, "fields": "pixelSize"}},
+    ]})
+    return h
+
+
+def _hoja_ranking(libro, nichos):
+    """Ranking por vendedor, con numeros reales. Hoja aparte y escondida a
+    proposito (ver _ocultar): esto es lo que un vendedor nuevo no necesita
+    ver el primer dia -quien de los cuatro no llamo nada esta semana- pero SI
+    hace falta completo y sin redondear para liquidar comisiones."""
+    try:
+        reintentar(libro.del_worksheet, libro.worksheet(RANKING))
+    except Exception:
+        pass
+    # cols=16: A-H la tabla visible (para quien la destape), J-O staging.
+    h = reintentar(libro.add_worksheet, title=RANKING, rows=30, cols=16, index=1)
+    _, del_vendedor, _ = _formulas_panel(nichos)
+
+    filas = [["RANKING DE VENDEDORES"] + [""] * 7,
+             ["Solo para uso interno: numeros reales para liquidar comisiones."] + [""] * 7,
+             ["Vendedor", "Leads asignados", "Demos iniciadas", "Clientes activos",
+              "% conversión", "Trabajados hoy", "", ""]]
+    fila_r1 = len(filas) + 1
+    fila_r2 = fila_r1 + FILAS_RANKING - 1
+    filas.append([f'=IFERROR(SORT(FILTER(J{fila_r1}:O{fila_r2},J{fila_r1}:J{fila_r2}<>""),2,FALSE),'
+                  f'"Cargá vendedores en Config")'] + [""] * 7)
+    for _ in range(FILAS_RANKING - 1):
+        filas.append([""] * 8)
+
+    reintentar(h.update, values=filas, range_name="A1", value_input_option="USER_ENTERED")
+
+    staging = []
+    for i in range(FILAS_RANKING):
+        fila = fila_r1 + i
+        staging.append([
+            f"=IFERROR('{CONFIG}'!A{FILA_VENDEDORES + i},\"\")",
+            del_vendedor(fila),
+            del_vendedor(fila, "Demo iniciada"),
+            del_vendedor(fila, "Cliente activo"),
+            f'=IF(N(K{fila})=0,"",M{fila}/K{fila})',
+            del_vendedor(fila, hoy=True)])
+    reintentar(h.update, values=staging, range_name=f"J{fila_r1}", value_input_option="USER_ENTERED")
+
+    azul = hex_a_rgb('#1D4E89')
+    fin = 3 + FILAS_RANKING
+    reintentar(libro.batch_update, {"requests": [
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": fin},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"fontFamily": FUENTE, "fontSize": TAM_DATOS,
+                               "foregroundColor": _rgb(hex_a_rgb(TINTA))},
+                "verticalAlignment": "MIDDLE", "padding": {"left": 10, "right": 10}}},
+            "fields": "userEnteredFormat(textFormat,verticalAlignment,padding)"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "bold": True, "fontSize": 16, "fontFamily": FUENTE,
+                "foregroundColor": _rgb(azul)}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 1, "endRowIndex": 2},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "italic": True, "fontSize": 9, "fontFamily": FUENTE,
+                "foregroundColor": _rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 2, "endRowIndex": 3},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(azul),
+                "textFormat": {"bold": True, "fontSize": TAM_ENCABEZADO, "fontFamily": FUENTE,
+                               "foregroundColor": _rgb(hex_a_rgb(BLANCO))},
+                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "WRAP"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,"
+                      "verticalAlignment,wrapStrategy)"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 3, "endRowIndex": fin,
+                      "startColumnIndex": 1, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontFamily": FUENTE, "fontSize": TAM_DATOS}}},
+            "fields": "userEnteredFormat(horizontalAlignment,textFormat)"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 3, "endRowIndex": fin,
+                      "startColumnIndex": 4, "endColumnIndex": 5},
+            "cell": {"userEnteredFormat": {
+                "numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+            "fields": "userEnteredFormat.numberFormat"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 3, "endRowIndex": fin,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontFamily": FUENTE}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        {"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [{"sheetId": h.id, "startRowIndex": 3, "endRowIndex": fin,
+                        "startColumnIndex": 3, "endColumnIndex": 4}],
+            "gradientRule": {
+                "minpoint": {"color": _rgb(hex_a_rgb('#FFFFFF')), "type": "NUMBER", "value": "0"},
+                "maxpoint": {"color": _rgb(hex_a_rgb('#34A853')), "type": "MAX"}}}}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 9, "endIndex": 15},
+            "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}},
+        {"updateSheetProperties": {
+            "properties": {"sheetId": h.id, "tabColor": _rgb(azul),
+                           "gridProperties": {"frozenRowCount": 3}},
+            "fields": "tabColor,gridProperties.frozenRowCount"}},
+        {"updateDimensionProperties": {
             "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
             "properties": {"pixelSize": 210}, "fields": "pixelSize"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 8},
             "properties": {"pixelSize": 145}, "fields": "pixelSize"}},
-    ]
-    reqs += encabezado(F_RANKING + 1, 6)
-    for i in range(0, len(reqs), 150):
-        reintentar(libro.batch_update, {"requests": reqs[i:i + 150]})
+    ]})
+    return h
 
 
 def _hoja_resumen(libro, nichos):
-    """Una fila por nicho: cuantos hay, cuantos se trabajaron y cuantos cerraron."""
+    """Una fila por nicho, en porcentaje y no en numeros crudos.
+
+    Antes mostraba Leads y Sin contactar como cuenta: "Barberias: 3640 leads,
+    3640 sin contactar" es el mismo numero grande que ya se saco del embudo
+    del Panel (e8f0d29), solo que repartido nicho por nicho. Nadie necesita
+    saber que hay miles de negocios sentados sin tocar; alcanza con el
+    porcentaje de cada nicho que esta contactado, interesado o convertido.
+    """
     try:
         reintentar(libro.del_worksheet, libro.worksheet(RESUMEN))
     except Exception:
         pass
-    h = reintentar(libro.add_worksheet, title=RESUMEN, rows=len(nichos) + 12, cols=7, index=2)
+    h = reintentar(libro.add_worksheet, title=RESUMEN, rows=len(nichos) + 12, cols=5, index=2)
 
-    filas = [["RESUMEN POR NICHO"] + [""] * 6,
-             ["Para ver qué rubro rinde y cuál conviene dejar de llamar."] + [""] * 6,
-             ["Nicho", "Leads", "Sin contactar", "Le interesó", "Demos",
-              "Clientes activos", "% conversión"]]
+    def _pct(n, leads, estado, invertir=False):
+        cuenta = f"COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"{estado}\")"
+        numerador = f"({leads}-{cuenta})" if invertir else cuenta
+        return f'=IF({leads}=0,"",{numerador}/{leads})'
+
+    filas = [["RESUMEN POR NICHO"] + [""] * 4,
+             ["Para ver que rubro rinde y cual conviene dejar de llamar."] + [""] * 4,
+             ["Nicho", "% contactado", "% interesado", "% demo", "% cliente activo"]]
     for n in nichos:
-        f = len(filas) + 1
+        leads = f"COUNTIF('{n}'!{COL_TELEFONO}2:{COL_TELEFONO},\"?*\")"
         filas.append([
             n,
-            f"=COUNTIF('{n}'!{COL_TELEFONO}2:{COL_TELEFONO},\"?*\")",
-            f"=COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"Sin contactar\")",
-            f"=COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"Le interesó\")",
-            f"=COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"Demo iniciada\")",
-            f"=COUNTIF('{n}'!{COL_ESTADO}2:{COL_ESTADO},\"Cliente activo\")",
-            f'=IF($B{f}=0,"",$F{f}/$B{f})'])
-    # Sin fila TOTAL a proposito: sumar las 43 hojas da los leads totales del
-    # negocio contra los interesados totales en una sola linea, que es
-    # exactamente el numero que un vendedor nuevo no necesita ver el primer
-    # dia. El detalle por nicho de arriba sigue completo.
+            _pct(n, leads, "Sin contactar", invertir=True),
+            _pct(n, leads, "Le interesó"),
+            _pct(n, leads, "Demo iniciada"),
+            _pct(n, leads, "Cliente activo")])
+    # Sin Leads ni Sin contactar en crudo, y sin fila TOTAL: sumar las 45
+    # hojas da los leads totales contra los interesados totales en una sola
+    # linea, que es exactamente el numero que un vendedor nuevo no necesita
+    # ver el primer dia. El detalle por nicho de arriba alcanza.
 
     reintentar(h.update, values=filas, range_name="A1", value_input_option="USER_ENTERED")
 
@@ -545,21 +638,15 @@ def _hoja_resumen(libro, nichos):
             "properties": {"pixelSize": 34}, "fields": "pixelSize"}},
         {"repeatCell": {
             "range": {"sheetId": h.id, "startRowIndex": 3, "endRowIndex": len(filas),
-                      "startColumnIndex": 1, "endColumnIndex": 7},
+                      "startColumnIndex": 1, "endColumnIndex": 5},
             "cell": {"userEnteredFormat": {
                 "horizontalAlignment": "CENTER",
-                "textFormat": {"fontFamily": FUENTE, "fontSize": TAM_DATOS}}},
-            "fields": "userEnteredFormat(horizontalAlignment,textFormat)"}},
-        {"repeatCell": {
-            "range": {"sheetId": h.id, "startRowIndex": 3, "endRowIndex": len(filas),
-                      "startColumnIndex": 6, "endColumnIndex": 7},
-            "cell": {"userEnteredFormat": {
+                "textFormat": {"fontFamily": FUENTE, "fontSize": TAM_DATOS},
                 "numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-            "fields": "userEnteredFormat.numberFormat"}},
-        # Sin resaltado de TOTAL: esa fila ya no existe.
+            "fields": "userEnteredFormat(horizontalAlignment,textFormat,numberFormat)"}},
         {"addBanding": {"bandedRange": {
             "range": {"sheetId": h.id, "startRowIndex": 2, "endRowIndex": len(filas),
-                      "startColumnIndex": 0, "endColumnIndex": 7},
+                      "startColumnIndex": 0, "endColumnIndex": 5},
             "rowProperties": {"headerColor": _rgb(azul),
                               "firstBandColor": _rgb(hex_a_rgb(BLANCO)),
                               "secondBandColor": _rgb(azul_claro)}}}},
@@ -571,12 +658,13 @@ def _hoja_resumen(libro, nichos):
             "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
             "properties": {"pixelSize": 220}, "fields": "pixelSize"}},
         {"updateDimensionProperties": {
-            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 7},
+            "range": {"sheetId": h.id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 5},
             "properties": {"pixelSize": 125}, "fields": "pixelSize"}},
         {"setBasicFilter": {"filter": {"range": {
             "sheetId": h.id, "startRowIndex": 2, "endRowIndex": len(filas),
-            "endColumnIndex": 7}}}},
+            "endColumnIndex": 5}}}},
     ]})
+    return h
 
 
 def armar(generado=GENERADO):
@@ -641,13 +729,17 @@ def armar(generado=GENERADO):
         reintentar(libro.batch_update, {"requests": reqs_formato[i:i + 150]})
     print("   formato, desplegables y colores aplicados")
 
-    _hoja_panel(libro, nichos)
+    panel_h = _hoja_panel(libro, nichos)
     print(f"   {PANEL} listo")
-    _hoja_resumen(libro, nichos)
+    ranking_h = _hoja_ranking(libro, nichos)
+    print(f"   {RANKING} listo (escondido)")
+    resumen_h = _hoja_resumen(libro, nichos)
     print(f"   {RESUMEN} listo")
+    _ocultar(libro, ranking_h.id, resumen_h.id)
+    print(f"   {RANKING} y {RESUMEN} escondidos: un vendedor nuevo no aterriza ahi")
 
     for titulo, hoja in previas.items():
-        if titulo not in nichos and titulo not in (CONFIG, PANEL, RESUMEN):
+        if titulo not in nichos and titulo not in (CONFIG, PANEL, RESUMEN, RANKING):
             reintentar(libro.del_worksheet, hoja)
             print(f"   borrada hoja vieja: {titulo}")
 
@@ -664,7 +756,7 @@ def _crudas(meta):
     salida = []
     for h in meta.get('sheets', []):
         p = h['properties']
-        if p['title'] in (CONFIG, PANEL, RESUMEN):
+        if p['title'] in (CONFIG, PANEL, RESUMEN, RANKING):
             continue
         if not p.get('gridProperties', {}).get('frozenRowCount'):
             salida.append(p)
@@ -711,11 +803,15 @@ def poner_al_dia(generado=GENERADO):
     # teniendo su hoja con trabajo adentro y tienen que seguir sumando.
     nichos = sorted(p['title'] for h in meta.get('sheets', [])
                     for p in [h['properties']]
-                    if p['title'] not in (CONFIG, PANEL, RESUMEN))
-    _hoja_panel(libro, nichos)
+                    if p['title'] not in (CONFIG, PANEL, RESUMEN, RANKING))
+    panel_h = _hoja_panel(libro, nichos)
     print(f"   {PANEL} rehecho sobre {len(nichos)} nichos")
-    _hoja_resumen(libro, nichos)
+    ranking_h = _hoja_ranking(libro, nichos)
+    print(f"   {RANKING} listo (escondido)")
+    resumen_h = _hoja_resumen(libro, nichos)
     print(f"   {RESUMEN} rehecho")
+    _ocultar(libro, ranking_h.id, resumen_h.id)
+    print(f"   {RANKING} y {RESUMEN} escondidos: un vendedor nuevo no aterriza ahi")
 
     print(f"\nListo: {libro.url}")
 
@@ -764,8 +860,15 @@ def demo():
     print('OK  _sheet_id: le saca el BOM y el \\n que mete PowerShell')
 
     _probar_hoja_panel()
-    print('OK  _hoja_panel: el ranking ordena por la columna que hay que ordenar '
-          'y el motivo dominante mira el rango correcto')
+    print('OK  _hoja_panel: solo porcentajes de equipo, sin tabla por vendedor')
+    _probar_hoja_ranking()
+    print('OK  _hoja_ranking: ordena por la columna que hay que ordenar, sin la '
+          'referencia circular $A->$J, y el staging queda escondido')
+    _probar_hoja_resumen()
+    print('OK  _hoja_resumen: solo porcentajes, nada de leads ni sin-contactar en crudo')
+    _probar_ocultar()
+    print('OK  _ocultar: Ranking y Resumen vuelven escondidos cada vez que se rearman')
+
 
     # _crudas: si se equivoca para el lado de "esta lista", la hoja nueva queda
     # sin desplegables para siempre; si se equivoca para el otro, le manda
@@ -791,12 +894,23 @@ def demo():
 
 class _HojaFalsa:
     """Imita lo justo de un Worksheet de gspread para que _hoja_panel corra sin
-    tocar Google. Guarda cada .update() para poder revisar las formulas."""
-    def __init__(self, sheet_id):
+    tocar Google. Guarda cada .update() para poder revisar las formulas.
+
+    Chequea el ancho de la grilla: escribir mas alla de `cols` (por ejemplo,
+    staging en J con una hoja creada de 8 columnas) es exactamente el error
+    "exceeds grid limits" de la API real. Sin este chequeo el test pasa igual
+    y el error solo aparece corriendo contra Google de verdad."""
+    def __init__(self, sheet_id, cols):
         self.id = sheet_id
+        self.cols = cols
         self.escrituras = []           # [(range_name, values)]
 
     def update(self, values, range_name, value_input_option=None):
+        col0 = ord(range_name[0]) - ord('A')
+        ancho = max((len(fila or []) for fila in values), default=1)
+        assert col0 + ancho <= self.cols, (
+            f"exceeds grid limits: {range_name} necesita hasta la columna "
+            f"{col0 + ancho}, la hoja se creo con cols={self.cols}")
         self.escrituras.append((range_name, values))
 
     def celda(self, range_name):
@@ -828,7 +942,7 @@ class _LibroFalso:
         pass
 
     def add_worksheet(self, title, rows, cols, index):
-        h = _HojaFalsa(sheet_id=len(self.hojas) + 1)
+        h = _HojaFalsa(sheet_id=len(self.hojas) + 1, cols=cols)
         self.hojas[title] = h
         return h
 
@@ -837,6 +951,42 @@ class _LibroFalso:
 
 
 def _probar_hoja_panel():
+    """El Panel de bienvenida no puede tener ni un numero en crudo: ni un
+    total de leads, ni una tabla por vendedor. Si algo de eso se cuela,
+    vuelve el problema que esto arreglo -70000 negocios y un vendedor solo
+    trabajando, a la vista de cualquiera que abre el archivo."""
+    libro = _LibroFalso()
+    nichos = ['Barberías', 'Odontología']
+    h = _hoja_panel(libro, nichos)
+    assert h is libro.hojas[PANEL]
+    valores = next(v for r, v in h.escrituras if r == "A1")
+
+    texto = str(h.escrituras)
+    assert "TOTALES DEL EMBUDO" not in texto, 'el embudo viejo volvio'
+    assert "Leads totales" not in texto, 'un total en crudo volvio a la vista'
+    assert "Leads asignados" not in texto, 'la tabla por vendedor volvio al Panel visible'
+    assert "Cantidad" not in texto, 'quedo la columna Cantidad a la vista'
+
+    def fila_1based(texto_buscado):
+        return next(i for i, fila in enumerate(valores) if fila and fila[0] == texto_buscado) + 1
+
+    fila_metricas = fila_1based("CÓMO VA EL EQUIPO") + 2   # titulo, encabezado, VALORES
+    for col in 'ABCD':
+        formula = h.celda(f"{col}{fila_metricas}")
+        assert formula.startswith('=IFERROR('), f'metrica sin blindar: {formula}'
+        assert '/' in formula, f'no quedo armada como porcentaje: {formula}'
+
+    # Motivo dominante: el rango de MAX/MATCH tiene que ser el mismo que
+    # llena el staging, ni una fila mas ni una menos.
+    fila_m1 = fila_1based("El que más frena, no la lista completa.") + 1
+    rango_esperado = f"J{fila_m1}:J{fila_m1 + len(MOTIVOS) - 1}"
+    dominante = h.celda(f"A{fila_m1}")
+    assert dominante.count(rango_esperado) == 2, \
+        f'MAX y MATCH no miran el mismo rango que el staging: {dominante}'
+    assert all(f'"{m}"' in dominante for m in MOTIVOS), f'falta un motivo: {dominante}'
+
+
+def _probar_hoja_ranking():
     """El ranking se arma con SORT/FILTER sobre una zona escondida (J:O) que
     tiene que apuntar exactamente a las mismas filas y columnas que llena el
     staging. Un desfasaje ahi no tira error en Sheets: silenciosamente ordena
@@ -847,41 +997,35 @@ def _probar_hoja_panel():
     vez de quedar apuntando a la fila vieja sin avisar."""
     libro = _LibroFalso()
     nichos = ['Barberías', 'Odontología']
-    _hoja_panel(libro, nichos)
-    h = libro.hojas[PANEL]
-    valores = next(v for r, v in h.escrituras if r == "A1")   # el bloque `f` completo
+    h = _hoja_ranking(libro, nichos)
+    assert h is libro.hojas[RANKING]
+    valores = next(v for r, v in h.escrituras if r == "A1")
 
     def fila_1based(texto):
         return next(i for i, fila in enumerate(valores) if fila and fila[0] == texto) + 1
 
-    fila_r1 = fila_1based("Vendedor") + 1    # header del ranking + 1 = primera fila de datos
+    fila_r1 = fila_1based("Vendedor") + 1
     visible = h.celda(f"A{fila_r1}")
     assert visible.startswith("=IFERROR(SORT(FILTER("), f'no arranca con SORT/FILTER: {visible}'
     assert f"J{fila_r1}:O{fila_r1 + FILAS_RANKING - 1}" in visible, \
         f'el SORT no lee el mismo rango que llena el staging: {visible}'
     assert ",2,FALSE)" in visible, f'no ordena por Leads asignados desc: {visible}'
 
+    # El bug que esto reemplaza: K{fila} usaba $A{fila}, la celda de SALIDA
+    # del propio SORT que lee J:O -> dependencia circular, Sheets devolvia
+    # #REF! en las seis columnas apenas se corria contra datos reales (recien
+    # se vio al rearmar la planilla real, el test viejo comparaba solo texto
+    # y no lo detectaba). Tiene que usar $J{fila}, el nombre de vendedor de
+    # ESTA MISMA fila del staging, sin pasar por el SORT.
+    conteo = h.celda(f"K{fila_r1}")
+    assert f"$J{fila_r1}" in conteo, f'sigue sin usar el nombre del staging: {conteo}'
+    assert f"$A{fila_r1}" not in conteo, f'volvio la referencia circular a $A{fila_r1}: {conteo}'
+
     # % conversion en el staging: numerador Clientes activos (M), denominador
     # Leads asignados (K). Mezclarlas (paso una vez con Demos en vez de
     # Clientes) da un % que no es el que dice el encabezado.
     pct = h.celda(f"N{fila_r1}")
     assert pct == f'=IF(N(K{fila_r1})=0,"",M{fila_r1}/K{fila_r1})', f'% mal armado: {pct}'
-
-    # Motivo dominante: el rango de MAX/MATCH tiene que ser el mismo que
-    # llena el staging de motivos, ni una fila mas ni una menos.
-    fila_m1 = fila_1based("El que más frena, no la lista completa.") + 1
-    rango_esperado = f"J{fila_m1}:J{fila_m1 + len(MOTIVOS) - 1}"
-    dominante = h.celda(f"A{fila_m1}")
-    assert dominante.count(rango_esperado) == 2, \
-        f'MAX y MATCH no miran el mismo rango que el staging: {dominante}'
-    assert all(f'"{m}"' in dominante for m in MOTIVOS), f'falta un motivo: {dominante}'
-    assert "Cantidad" not in str(h.escrituras), 'quedo la columna Cantidad a la vista'
-
-    # Sin el embudo con totales absolutos: es el numero que dice de un vistazo
-    # "faltan 70000 negocios y solo hay 30 asignados".
-    texto = str(h.escrituras)
-    assert "TOTALES DEL EMBUDO" not in texto, 'el embudo con los totales sigue ahi'
-    assert "Leads totales" not in texto, 'el total de leads sigue a la vista'
 
     # El staging tiene que estar escondido, si no todo esto era para nada.
     ocultos = [r for b in libro.batches for r in b['requests']
@@ -892,6 +1036,40 @@ def _probar_hoja_panel():
     rango_oculto = ocultos[0]['updateDimensionProperties']['range']
     assert (rango_oculto['startIndex'], rango_oculto['endIndex']) == (9, 15), \
         f'esconde las columnas que no son: {rango_oculto}'
+
+
+def _probar_hoja_resumen():
+    """Sin numeros crudos: reemplazar la cuenta por el porcentaje es lo que
+    evita que abrir Resumen sea ver "3640 sin contactar" al lado de
+    "Barberias". Si alguna formula se cuela sin dividir por el total, vuelve
+    el numero grande que esto existe para tapar."""
+    libro = _LibroFalso()
+    _hoja_resumen(libro, ['Barberías'])
+    h = libro.hojas[RESUMEN]
+    valores = next(v for r, v in h.escrituras if r == "A1")
+
+    encabezado = valores[2]
+    assert encabezado == ["Nicho", "% contactado", "% interesado", "% demo", "% cliente activo"],         f'encabezado con numero crudo: {encabezado}'
+    assert not any(c in ('Leads', 'Sin contactar', 'Clientes activos') for c in encabezado),         f'volvio una columna con numeros en crudo: {encabezado}'
+
+    fila = valores[3]
+    assert fila[0] == 'Barberías'
+    for formula in fila[1:]:
+        assert formula.startswith('=IF('), f'formula sin blindar contra division por cero: {formula}'
+        assert '/' in formula, f'no quedo armado como porcentaje: {formula}'
+    assert '-COUNTIF' in fila[1], f'% contactado no invierte Sin contactar: {fila[1]}'
+
+
+def _probar_ocultar():
+    """Panel y Resumen tienen que volver escondidos cada vez que se rearman,
+    o alguien que los destapo una vez los deja a la vista para siempre."""
+    libro = _LibroFalso()
+    _ocultar(libro, 111, 222)
+    reqs = libro.batches[-1]['requests']
+    escondidos = {r['updateSheetProperties']['properties']['sheetId']
+                  for r in reqs if r['updateSheetProperties']['properties'].get('hidden')}
+    assert escondidos == {111, 222}, f'no escondio las hojas esperadas: {escondidos}'
+
 
 
 def _probar_reintentar(dormido):

@@ -19,7 +19,7 @@ import sys
 
 import pandas as pd
 
-from modules.planilla import (COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, IDX,
+from modules.planilla import (COLUMNAS, CLAVE, CONFIG, PANEL, RESUMEN, RANKING, IDX,
                               col_letra, fila_desde, reintentar, TRANSITORIOS)
 from modules.telefono import canonico
 
@@ -86,7 +86,7 @@ def sincronizar(generado=GENERADO):
 
     libro = _abrir_libro()
     hojas = {h.title: h for h in reintentar(libro.worksheets)
-             if h.title not in (CONFIG, PANEL, RESUMEN)}
+             if h.title not in (CONFIG, PANEL, RESUMEN, RANKING)}
 
     # Solo la columna del telefono: traer las hojas enteras seria lentisimo y
     # ademas arriesga leer datos a medio escribir por un vendedor.
@@ -137,7 +137,7 @@ def calificar_existentes(generado=GENERADO):
     libro = _abrir_libro()
     meta = reintentar(libro.fetch_sheet_metadata)
     hojas = {h['properties']['title']: h['properties'] for h in meta.get('sheets', [])
-             if h['properties']['title'] not in (CONFIG, PANEL, RESUMEN)}
+             if h['properties']['title'] not in (CONFIG, PANEL, RESUMEN, RANKING)}
 
     # Las hojas se crearon con exactamente 10 columnas. La API de valores no
     # agranda la grilla sola: escribir en la 11 da "exceeds grid limits".
