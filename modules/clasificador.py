@@ -101,6 +101,15 @@ GENERICAS = re.compile(_norm(
     r'centro de salud y bienestar|consultorio|profesional de|'
     r'centro de bienestar|especialista)'))
 
+# "Centro de estetica" es el catch-all mas grande de Maps (6325 negocios, mas
+# que ningun otro): una lashista, una manicura y una depiladora terminan las
+# tres con esta categoria. A diferencia de las GENERICAS de arriba, ACA la
+# categoria es un nicho valido en si mismo (a la mayoria no le sobra nada mas
+# especifico), asi que el nombre solo la desplaza cuando dice algo puntual
+# ("Lashes Rosario"); sin esa pista se queda en Centros de estetica, no cae a
+# la busqueda que la encontro (esa SI es una pista floja, ver arriba).
+AMPLIAS = {'Centros de estética'}
+
 
 def _por_reglas(texto):
     for nicho, patron in _COMPILADAS:
@@ -140,6 +149,10 @@ def clasificar(categoria, nicho_busqueda='', nombre=''):
 
     nicho = _por_reglas(cat)
     if nicho:
+        if nicho in AMPLIAS:
+            por_nombre = _por_reglas(_norm(nombre))
+            if por_nombre and por_nombre != nicho:
+                return (por_nombre, f'categoria amplia ({categoria}), resuelto por el nombre')
         return (nicho, 'ok' if nicho == nicho_busqueda else f'reclasificado desde {nicho_busqueda}')
     return (_por_reglas(_norm(nombre)) or respaldo, f'categoria sin regla ({categoria})')
 
@@ -173,6 +186,13 @@ def demo():
         # Sin categoria: no se tira, se usa el nombre o la busqueda
         ('',                     'Barberías',   'Corte Fino',            'Barberías'),
         ('',                     'Peluquerías', 'Barbería Don Juan',     'Barberías'),
+
+        # Centro de estetica es el catch-all mas grande de Maps (6325 negocios):
+        # el nombre desplaza la categoria si es especifico...
+        ('Centro de estética',   'Cejas y pestañas', 'Pestañas Bea',     'Cejas y pestañas'),
+        # ...pero sin nombre especifico se queda en Centros de estetica, no cae
+        # a la busqueda (a diferencia de una GENERICA como Centro medico).
+        ('Centro de estética',   'Cejas y pestañas', 'Bella',            'Centros de estética'),
     ]
     for categoria, busqueda, nombre, esperado in casos:
         obtenido, motivo = clasificar(categoria, busqueda, nombre)
