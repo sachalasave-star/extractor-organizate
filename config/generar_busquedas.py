@@ -25,7 +25,7 @@ NICHOS = {
  'Barberías':              ('Estética y belleza', ['barbería', 'barber shop', 'peluquería masculina', 'barbería para hombres', 'barbero']),
  'Centros de estética':    ('Estética y belleza', ['centro de estética', 'estética facial', 'clínica estética', 'estética corporal', 'cosmetología', 'esteticista']),
  'Manicura y pedicura':    ('Estética y belleza', ['manicura', 'pedicura', 'salón de uñas', 'nail salon', 'esculpidas de uñas']),
- 'Cejas y pestañas':       ('Estética y belleza', ['extensiones de pestañas', 'diseño de cejas', 'lifting de pestañas', 'microblading', 'perfilado de cejas']),
+ 'Cejas y pestañas':       ('Estética y belleza', ['extensiones de pestañas', 'diseño de cejas', 'lifting de pestañas', 'microblading', 'perfilado de cejas', 'lash extension', 'pestañas pelo a pelo', 'diseño de cejas con henna']),
  'Depilación definitiva':  ('Estética y belleza', ['depilación definitiva', 'depilación láser', 'centro de depilación', 'depilación con cera', 'depilación masculina']),
  'Salones de maquillaje':  ('Estética y belleza', ['maquillaje profesional', 'maquilladora', 'estudio de maquillaje', 'maquillaje para eventos', 'automaquillaje']),
  'Spas':                   ('Estética y belleza', ['spa', 'day spa', 'centro de relajación', 'spa y masajes', 'sauna']),
