@@ -37,6 +37,15 @@ COLUMNAS_REFERIDOS = ['Vendedor', 'Referido por']
 # (mejor mostrar de mas que esconder un cliente que si esta pagando).
 ESTADO_LABEL = {'demo': 'Demo', 'baja': 'Cancelado'}
 
+# Mismos colores que los estados del embudo en planilla.ESTADOS (Cliente
+# activo, Demo iniciada, No interesado), para que la planilla se lea igual
+# de una hoja a la otra.
+COLOR_ESTADO = {
+    'Activo':    ((0.20, 0.66, 0.33), (1, 1, 1)),
+    'Demo':      ((0.55, 0.30, 0.80), (1, 1, 1)),
+    'Cancelado': ((0.85, 0.24, 0.24), (1, 1, 1)),
+}
+
 
 def estado_label(estado):
     return ESTADO_LABEL.get(estado, 'Activo')
@@ -145,6 +154,74 @@ def resumen_por_vendedor(clientes, telefono_a_vendedor, referido_por, vendedores
     return resultado
 
 
+def filas_resumen(resumen):
+    """(filas, marcas) para la hoja de comisiones.
+
+    Arranca con una tabla de totales -una linea por vendedor- y recien
+    despues el detalle negocio por negocio. Es al reves de como salia antes:
+    la pregunta que se hace todo el mundo al abrir la hoja es "cuanto le toca
+    a cada uno", y eso no puede estar al final de 200 filas de detalle.
+
+    marcas es {rol: [indices de fila]}, 0-based, para que el formato sepa que
+    pintar sin tener que adivinar leyendo el texto de cada fila.
+    """
+    filas, marcas = [], {}
+
+    def poner(fila, rol):
+        marcas.setdefault(rol, []).append(len(filas))
+        filas.append(fila)
+
+    poner(['💵 COMISIONES POR VENDEDOR', '', '', ''], 'titulo')
+    poner(['Se calcula solo con los pagos reales de Organizate. No editar a mano.',
+           '', '', ''], 'ayuda')
+    poner(['', '', '', ''], 'vacia')
+
+    poner(['Vendedor', 'Ventas propias (50%)', 'Afiliados (20%)', 'TOTAL A COBRAR'],
+          'enc_resumen')
+    for v, info in resumen.items():
+        poner([v, info['comision_propia'], info['comision_afiliados'], info['total']],
+              'resumen')
+    poner(['TOTAL EQUIPO',
+           round(sum(i['comision_propia'] for i in resumen.values()), 2),
+           round(sum(i['comision_afiliados'] for i in resumen.values()), 2),
+           round(sum(i['total'] for i in resumen.values()), 2)], 'total_equipo')
+
+    poner(['', '', '', ''], 'vacia')
+    poner(['', '', '', ''], 'vacia')
+    poner(['DETALLE POR VENDEDOR', '', '', ''], 'titulo_detalle')
+
+    for v, info in resumen.items():
+        poner(['', '', '', ''], 'vacia')
+        poner([v.upper(), '', '', info['total']], 'vendedor')
+
+        poner(['Ventas propias (50%)', '', '', ''], 'subseccion')
+        poner(['Negocio', 'Estado', 'Total pagado', 'Comisión'], 'encabezado')
+        if info['propios']:
+            for n in info['propios']:
+                poner([n['negocio'], n['estado'], n['total'],
+                       round(n['total'] * PCT_VENDEDOR, 2)], 'dato')
+        else:
+            poner(['Todavía no tiene negocios asignados', '', '', ''], 'sin_datos')
+        poner(['Subtotal propio', '', '', info['comision_propia']], 'subtotal')
+
+        if info['afiliados']:
+            poner(['Afiliados (20% de lo que venden ellos)', '', '', ''], 'subseccion')
+            for a, ainfo in info['afiliados'].items():
+                poner([f'↳ {a}', '', '', ainfo['comision']], 'afiliado')
+                poner(['Negocio', 'Estado', 'Total pagado', 'Comisión (20%)'], 'encabezado')
+                if ainfo['negocios']:
+                    for n in ainfo['negocios']:
+                        poner([n['negocio'], n['estado'], n['total'],
+                               round(n['total'] * PCT_REFERIDO, 2)], 'dato')
+                else:
+                    poner(['Todavía no vendió nada', '', '', ''], 'sin_datos')
+            poner(['Subtotal afiliados', '', '', info['comision_afiliados']], 'subtotal')
+
+        poner([f'TOTAL {v.upper()}', '', '', info['total']], 'total')
+
+    return filas, marcas
+
+
 def demo():
     clientes = [
         {'id': 'cli_1', 'negocio': 'Barberia A', 'telefono': '0341 353-9510',
@@ -182,7 +259,8 @@ def demo():
     assert corte('2026-08-10T00:00:00+00:00') == 15
     print('OK  corte: parsea el datetime completo del endpoint, no solo la fecha')
 
-    vendedores = ['Augusto', 'Valentino', 'Joaquin']
+    # Marto va a proposito sin una sola venta: el caso normal al principio.
+    vendedores = ['Augusto', 'Valentino', 'Joaquin', 'Marto']
     referido_por = {'Valentino': 'Augusto', 'Joaquin': 'Augusto'}
     clientes_r = [
         {'telefono': '3413539510', 'negocio': 'Barberia A', 'estado': 'activo',
@@ -211,6 +289,25 @@ def demo():
     assert r['Joaquin']['comision_propia'] == 4000 and not r['Joaquin']['afiliados']
 
     print('OK  resumen_por_vendedor: 50% propio + 20% de cada afiliado, demo no cobra')
+
+    filas, marcas = filas_resumen(r)
+    assert all(len(f) == 4 for f in filas), 'todas las filas van de 4 columnas'
+    # La tabla de totales va ARRIBA: la primera fila de resumen tiene que
+    # aparecer antes que cualquier fila de detalle.
+    assert max(marcas['resumen']) < min(marcas['vendedor']), \
+        'el resumen quedo despues del detalle'
+    assert len(marcas['resumen']) == len(vendedores), 'falta un vendedor en el resumen'
+    # El total del equipo es la suma de los totales, no algo recalculado aparte.
+    fila_equipo = filas[marcas['total_equipo'][0]]
+    assert fila_equipo[3] == round(sum(i['total'] for i in r.values()), 2), fila_equipo
+    # Marto no vendio nada: tiene que salir igual, con su fila y en cero.
+    assert filas[marcas['resumen'][-1]][0] == 'Marto'
+    assert any('no tiene negocios' in f[0] for f in filas), \
+        'el vendedor sin ventas tiene que decirlo, no quedar en blanco'
+    # Cada indice marcado apunta a una fila que existe.
+    for rol, idxs in marcas.items():
+        assert all(0 <= i < len(filas) for i in idxs), rol
+    print('OK  filas_resumen: totales arriba, detalle abajo, sin vendedor perdido')
 
 
 if __name__ == '__main__':

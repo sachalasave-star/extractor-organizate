@@ -57,6 +57,9 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           ORGANIZATE_TOKEN: ${{ secrets.ORGANIZATE_TOKEN }}
+          # Sin esto las hojas de plata se protegen en modo aviso. Va como
+          # secret y no en el codigo porque el repo es publico.
+          SHEET_OWNER: ${{ secrets.SHEET_OWNER }}
         run: python liquidar_comisiones.py
 
       - name: Guardar resultados en el repo

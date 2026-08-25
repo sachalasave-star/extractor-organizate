@@ -16,6 +16,11 @@ def hex_a_rgb(h):
     return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
 
 
+def rgb(c):
+    """(r,g,b) 0..1 -> el dict que espera la API de Sheets."""
+    return {"red": c[0], "green": c[1], "blue": c[2]}
+
+
 # Un tono por rubro: oscuro para el encabezado, claro para las filas alternadas.
 RUBROS = {
     'Estética y belleza':   ('#8E3B6B', '#F7EDF3'),
@@ -25,6 +30,11 @@ RUBROS = {
     'Otros servicios':      ('#4A4A55', '#F0F0F2'),
 }
 RUBRO_POR_DEFECTO = RUBROS['Otros servicios']
+
+# Las hojas de plata (comisiones, liquidacion) van fuera de la escala de
+# rubros a proposito: no son un nicho mas, y conviene que se noten distintas
+# apenas se abre la pestaña.
+DINERO = ('#1E5C41', '#E9F3ED')
 
 TINTA = '#1A1A1A'           # texto principal
 TINTA_SUAVE = '#6B6B76'     # texto secundario
