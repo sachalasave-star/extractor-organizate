@@ -15,13 +15,14 @@ nada que perder al reescribirla.
 import os
 import sys
 
-from modules.comisiones import (COLUMNAS_LIQUIDACION, COLUMNAS_REFERIDOS,
-                                LIQUIDACION, REFERIDOS, liquidar, obtener_clientes)
+from modules.comisiones import (COLUMNAS_LIQUIDACION, COLUMNAS_REFERIDOS, PCT_REFERIDO,
+                                PCT_VENDEDOR, LIQUIDACION, REFERIDOS, RESUMEN_COMISIONES,
+                                liquidar, obtener_clientes, resumen_por_vendedor)
 from modules.planilla import CLAVE, CONFIG, IDX, PANEL, RANKING, RESUMEN, VENDEDORES, col_letra, reintentar
 from modules.telefono import canonico
 from sincronizar_sheets import _abrir_libro, _sheet_id
 
-FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, LIQUIDACION, REFERIDOS)
+FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, LIQUIDACION, REFERIDOS, RESUMEN_COMISIONES)
 
 
 def _telefono_a_vendedor(libro):
@@ -78,6 +79,58 @@ def _hoja_liquidacion(libro, filas):
     return h
 
 
+def _filas_resumen(resumen):
+    """[filas] para la hoja Comisiones por vendedor: un bloque por vendedor,
+    sus negocios propios, despues un sub-bloque por cada afiliado. Todo
+    calculado, nada para tipear a mano (por eso la hoja se protege)."""
+    filas = []
+    for v, info in resumen.items():
+        filas.append([v.upper(), '', '', ''])
+        filas.append(['Ventas propias (50%)', '', '', ''])
+        filas.append(['Negocio', 'Estado', 'Total pagado', 'Comisión'])
+        for n in info['propios']:
+            filas.append([n['negocio'], n['estado'], n['total'],
+                         round(n['total'] * PCT_VENDEDOR, 2)])
+        filas.append(['Subtotal propio', '', '', info['comision_propia']])
+        filas.append(['', '', '', ''])
+
+        if info['afiliados']:
+            filas.append(['Afiliados (20% de sus ventas)', '', '', ''])
+            for a, ainfo in info['afiliados'].items():
+                filas.append([a.upper(), '', '', ''])
+                filas.append(['Negocio', 'Estado', 'Total pagado', 'Comisión (20%)'])
+                for n in ainfo['negocios']:
+                    filas.append([n['negocio'], n['estado'], n['total'],
+                                 round(n['total'] * PCT_REFERIDO, 2)])
+                filas.append([f'Subtotal {a}', '', '', ainfo['comision']])
+            filas.append(['Subtotal afiliados', '', '', info['comision_afiliados']])
+            filas.append(['', '', '', ''])
+
+        filas.append([f'TOTAL {v.upper()}', '', '', info['total']])
+        filas.append(['', '', '', ''])
+        filas.append(['', '', '', ''])
+    return filas
+
+
+def _hoja_resumen_comisiones(libro, filas):
+    try:
+        reintentar(libro.del_worksheet, libro.worksheet(RESUMEN_COMISIONES))
+    except Exception:
+        pass
+    h = reintentar(libro.add_worksheet, title=RESUMEN_COMISIONES,
+                   rows=len(filas) + 10, cols=4)
+    reintentar(h.update, values=filas, range_name="A1")
+    # warningOnly, no un bloqueo duro: si se protege sin editores explicitos
+    # y alguien mete la pata con esa lista, la protec deja afuera hasta al
+    # dueño de la planilla. El aviso alcanza para que nadie pise el numero
+    # sin darse cuenta, sin ese riesgo.
+    reintentar(libro.batch_update, {"requests": [{"addProtectedRange": {"protectedRange": {
+        "range": {"sheetId": h.id},
+        "description": "Generado automaticamente por liquidar_comisiones.py, no editar a mano",
+        "warningOnly": True}}}]})
+    return h
+
+
 def main():
     if not _sheet_id() or not (
             os.environ.get("GOOGLE_CREDENTIALS") or os.path.exists("credenciales.json")):
@@ -96,9 +149,14 @@ def main():
     filas = liquidar(clientes, tel_a_vend, referido_por)
     _hoja_liquidacion(libro, filas)
 
-    sin_match = sum(1 for c in clientes if c.get('pagos')
-                    and not tel_a_vend.get(canonico(c.get('telefono', ''))))
-    print(f"{LIQUIDACION}: {len(filas)} pagos liquidados, {len(clientes)} clientes en Organizate"
+    resumen = resumen_por_vendedor(clientes, tel_a_vend, referido_por, VENDEDORES)
+    _hoja_resumen_comisiones(libro, _filas_resumen(resumen))
+
+    sin_match = sum(1 for c in clientes
+                    if not tel_a_vend.get(canonico(c.get('telefono', ''))))
+    print(f"{LIQUIDACION}: {len(filas)} pagos liquidados. {RESUMEN_COMISIONES}: "
+          f"{sum(1 for i in resumen.values() if i['total'])} vendedores con comision. "
+          f"{len(clientes)} clientes en Organizate"
           f"{f', {sin_match} sin match en la planilla' if sin_match else ''}.")
 
 

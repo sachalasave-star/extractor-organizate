@@ -12,6 +12,7 @@ sacar el 15 sin poner el 9 deja un celular identico a un fijo, asi que
 """
 import os
 import sys
+from datetime import datetime
 
 from modules.telefono import canonico
 
@@ -23,11 +24,22 @@ PCT_ORGANIZATE = 0.30
 
 LIQUIDACION = '💰 Liquidación'
 REFERIDOS = '🤝 Referidos'
+RESUMEN_COMISIONES = '💵 Comisiones por vendedor'
 
 COLUMNAS_LIQUIDACION = ['Cliente', 'Negocio', 'Teléfono', 'Período', 'Monto',
                         'Vendedor', 'Comisión vendedor', 'Referido por',
                         'Comisión referido', 'Organizate', 'Corte', 'Alta']
 COLUMNAS_REFERIDOS = ['Vendedor', 'Referido por']
+
+# Como llega 'estado' del endpoint -> como se muestra. Cualquier valor nuevo
+# que Organizate agregue el dia de mañana (ademas de demo/baja) se toma como
+# activo: es el unico estado que cobra, asi que es el default mas seguro
+# (mejor mostrar de mas que esconder un cliente que si esta pagando).
+ESTADO_LABEL = {'demo': 'Demo', 'baja': 'Cancelado'}
+
+
+def estado_label(estado):
+    return ESTADO_LABEL.get(estado, 'Activo')
 
 
 def _token():
@@ -49,10 +61,14 @@ def obtener_clientes():
 
 
 def corte(fecha_alta):
-    """15 o 30: que dia del mes cae la liquidacion, segun el dia de alta."""
+    """15 o 30: que dia del mes cae la liquidacion, segun el dia de alta.
+
+    El endpoint manda datetime completo con zona ("2026-08-25T21:18:13.55+00:00"),
+    no solo la fecha, asi que hace falta parsearlo entero en vez de partir por '-'
+    (el dia no es el tercer campo separado por guiones)."""
     try:
-        dia = int(fecha_alta.split('-')[2])
-    except (IndexError, ValueError):
+        dia = datetime.fromisoformat(fecha_alta).day
+    except (TypeError, ValueError):
         dia = 1
     return 15 if dia <= 15 else 30
 
@@ -87,6 +103,48 @@ def liquidar(clientes, telefono_a_vendedor, referido_por):
     return filas
 
 
+def _negocios_de(vendedor, clientes, telefono_a_vendedor):
+    """Negocios de ESTE vendedor (los que el cerro), con estado y lo pagado
+    en total hasta ahora. Incluye demo y cancelados: el pedido es distinguir
+    pipeline de plata real, no esconder lo que todavia no cobra."""
+    salida = []
+    for c in clientes:
+        if telefono_a_vendedor.get(canonico(c.get('telefono', ''))) != vendedor:
+            continue
+        total = sum(float(p.get('monto', 0)) for p in c.get('pagos', []))
+        salida.append({'negocio': c.get('negocio', ''),
+                       'estado': estado_label(c.get('estado', '')), 'total': total})
+    return salida
+
+
+def resumen_por_vendedor(clientes, telefono_a_vendedor, referido_por, vendedores):
+    """{vendedor: {propios, comision_propia, afiliados, comision_afiliados, total}}
+
+    afiliados es {nombre_afiliado: {negocios, comision}}: quien tiene a quien
+    de afiliado sale de invertir referido_por (si Valentino fue 'referido
+    por' Augusto, Valentino es afiliado de Augusto). Un vendedor puede tener
+    varios afiliados; cada uno le suma su 20%, sin tope.
+    """
+    resultado = {}
+    for v in vendedores:
+        propios = _negocios_de(v, clientes, telefono_a_vendedor)
+        comision_propia = round(sum(n['total'] for n in propios) * PCT_VENDEDOR, 2)
+
+        afiliados = {}
+        for a in vendedores:
+            if referido_por.get(a) != v:
+                continue
+            negocios_a = _negocios_de(a, clientes, telefono_a_vendedor)
+            afiliados[a] = {'negocios': negocios_a,
+                            'comision': round(sum(n['total'] for n in negocios_a) * PCT_REFERIDO, 2)}
+        comision_afiliados = round(sum(info['comision'] for info in afiliados.values()), 2)
+
+        resultado[v] = {'propios': propios, 'comision_propia': comision_propia,
+                        'afiliados': afiliados, 'comision_afiliados': comision_afiliados,
+                        'total': round(comision_propia + comision_afiliados, 2)}
+    return resultado
+
+
 def demo():
     clientes = [
         {'id': 'cli_1', 'negocio': 'Barberia A', 'telefono': '0341 353-9510',
@@ -118,6 +176,41 @@ def demo():
     assert not any(f[0] == 'cli_3' for f in filas), 'un telefono sin match no debe cobrar'
 
     print('OK  comisiones: 50/20/30 por pago, corte por dia de alta, sin match no liquida')
+
+    # Fecha completa con hora y zona, como la manda de verdad el endpoint.
+    assert corte('2026-08-25T21:18:13.55173+00:00') == 30
+    assert corte('2026-08-10T00:00:00+00:00') == 15
+    print('OK  corte: parsea el datetime completo del endpoint, no solo la fecha')
+
+    vendedores = ['Augusto', 'Valentino', 'Joaquin']
+    referido_por = {'Valentino': 'Augusto', 'Joaquin': 'Augusto'}
+    clientes_r = [
+        {'telefono': '3413539510', 'negocio': 'Barberia A', 'estado': 'activo',
+         'pagos': [{'monto': 15000}]},                                  # Augusto, propio
+        {'telefono': '1126205229', 'negocio': 'Spa B', 'estado': 'activo',
+         'pagos': [{'monto': 10000}]},                                  # Valentino, afiliado de Augusto
+        {'telefono': '3411112222', 'negocio': 'Nails C', 'estado': 'activo',
+         'pagos': [{'monto': 8000}]},                                   # Joaquin, afiliado de Augusto
+        {'telefono': '3413539510', 'negocio': 'Barberia A demo', 'estado': 'demo', 'pagos': []},
+    ]
+    tel_a_vend_r = {canonico('3413539510'): 'Augusto', canonico('1126205229'): 'Valentino',
+                    canonico('3411112222'): 'Joaquin'}
+    r = resumen_por_vendedor(clientes_r, tel_a_vend_r, referido_por, vendedores)
+
+    assert r['Augusto']['comision_propia'] == 7500, r['Augusto']       # 50% de 15000
+    assert set(r['Augusto']['afiliados']) == {'Valentino', 'Joaquin'}
+    assert r['Augusto']['afiliados']['Valentino']['comision'] == 2000  # 20% de 10000
+    assert r['Augusto']['afiliados']['Joaquin']['comision'] == 1600    # 20% de 8000
+    assert r['Augusto']['comision_afiliados'] == 3600
+    assert r['Augusto']['total'] == 11100, r['Augusto']                # 7500 + 3600
+    # El demo de Augusto aparece en propios con total 0, no suma comision.
+    demo_propio = next(n for n in r['Augusto']['propios'] if n['estado'] == 'Demo')
+    assert demo_propio['total'] == 0
+
+    assert r['Valentino']['comision_propia'] == 5000 and not r['Valentino']['afiliados']
+    assert r['Joaquin']['comision_propia'] == 4000 and not r['Joaquin']['afiliados']
+
+    print('OK  resumen_por_vendedor: 50% propio + 20% de cada afiliado, demo no cobra')
 
 
 if __name__ == '__main__':
