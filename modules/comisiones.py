@@ -31,24 +31,46 @@ COLUMNAS_LIQUIDACION = ['Cliente', 'Negocio', 'Teléfono', 'Período', 'Monto',
                         'Comisión referido', 'Organizate', 'Corte', 'Alta']
 COLUMNAS_REFERIDOS = ['Vendedor', 'Referido por']
 
-# Como llega 'estado' del endpoint -> como se muestra. Cualquier valor nuevo
-# que Organizate agregue el dia de mañana (ademas de demo/baja) se toma como
-# activo: es el unico estado que cobra, asi que es el default mas seguro
-# (mejor mostrar de mas que esconder un cliente que si esta pagando).
-ESTADO_LABEL = {'demo': 'Demo', 'baja': 'Cancelado'}
+# Como llega 'estado' del endpoint -> como se muestra.
+#   activo      paga hoy
+#   demo        en prueba, todavia no pago nunca
+#   cancelado   pagaba y se dio de baja (baja trae la fecha)
+#   abandonado  se registro, nunca pago, tampoco esta en demo
+# 'baja' es el nombre viejo de cancelado; se deja mapeado por si vuelve.
+ESTADO_LABEL = {'activo': 'Activo', 'demo': 'Demo', 'cancelado': 'Cancelado',
+                'baja': 'Cancelado', 'abandonado': 'Abandonado'}
 
 # Mismos colores que los estados del embudo en planilla.ESTADOS (Cliente
 # activo, Demo iniciada, No interesado), para que la planilla se lea igual
-# de una hoja a la otra.
+# de una hoja a la otra. Abandonado va gris: no es una mala noticia como una
+# baja, es alguien que nunca arranco.
 COLOR_ESTADO = {
-    'Activo':    ((0.20, 0.66, 0.33), (1, 1, 1)),
-    'Demo':      ((0.55, 0.30, 0.80), (1, 1, 1)),
-    'Cancelado': ((0.85, 0.24, 0.24), (1, 1, 1)),
+    'Activo':     ((0.20, 0.66, 0.33), (1, 1, 1)),
+    'Demo':       ((0.55, 0.30, 0.80), (1, 1, 1)),
+    'Cancelado':  ((0.85, 0.24, 0.24), (1, 1, 1)),
+    'Abandonado': ((0.42, 0.42, 0.46), (1, 1, 1)),
 }
 
 
 def estado_label(estado):
-    return ESTADO_LABEL.get(estado, 'Activo')
+    """Un estado que no conocemos se muestra TAL CUAL, nunca como 'Activo'.
+
+    Antes el default era 'Activo', con el argumento de que era el unico que
+    cobra y mejor mostrar de mas. Salio mal apenas Organizate sumo estados:
+    los 8 clientes 'abandonado' se mostraban como Activo, o sea justo al
+    reves de la realidad. Un estado desconocido tiene que cantar que es
+    desconocido, no disfrazarse del mas optimista.
+    """
+    return ESTADO_LABEL.get(estado, (estado or 'sin estado').capitalize())
+
+
+def sin_cuentas_internas(clientes):
+    """Saca las cuentas internas (demos de vendedores, pruebas de desarrollo).
+
+    Son negocios gratis que existen a proposito. Si entran al calculo, un
+    vendedor puede terminar cobrando comision por una cuenta de mentira.
+    """
+    return [c for c in clientes if not c.get('es_cuenta_interna')]
 
 
 def _token():
@@ -62,11 +84,16 @@ def _token():
 
 
 def obtener_clientes():
-    """Trae la lista de clientes que pagan, desde el endpoint de Organizate."""
+    """Trae los clientes desde el endpoint de Organizate, sin cuentas internas.
+
+    El filtro va aca, en la puerta de entrada, y no en cada consumidor: si
+    alguna vez se agrega otro calculo sobre los clientes, arranca limpio sin
+    tener que acordarse de filtrar.
+    """
     import requests
     r = requests.get(ENDPOINT, headers={"Authorization": f"Bearer {_token()}"}, timeout=30)
     r.raise_for_status()
-    return r.json()
+    return sin_cuentas_internas(r.json())
 
 
 def corte(fecha_alta):
@@ -308,6 +335,61 @@ def demo():
     for rol, idxs in marcas.items():
         assert all(0 <= i < len(filas) for i in idxs), rol
     print('OK  filas_resumen: totales arriba, detalle abajo, sin vendedor perdido')
+
+    # Estados del endpoint. 'abandonado' NO puede caer en Activo: cuando
+    # Organizate sumo ese estado, 8 de 9 clientes eran abandonados y con el
+    # default viejo se mostraban todos como Activo.
+    assert estado_label('activo') == 'Activo'
+    assert estado_label('abandonado') == 'Abandonado'
+    assert estado_label('cancelado') == 'Cancelado'
+    assert estado_label('baja') == 'Cancelado', 'el nombre viejo tiene que seguir mapeado'
+    assert estado_label('demo') == 'Demo'
+    assert estado_label('jubilado') == 'Jubilado', 'un estado nuevo se muestra, no se disfraza'
+    assert estado_label(None) == 'Sin estado'
+    assert set(ESTADO_LABEL.values()) <= set(COLOR_ESTADO), 'falta un color de estado'
+    print('OK  estado_label: ningun estado desconocido se hace pasar por Activo')
+
+    internas = [{'negocio': 'Real', 'es_cuenta_interna': False},
+                {'negocio': 'Demo del vendedor', 'es_cuenta_interna': True},
+                {'negocio': 'Viejo sin el campo'}]
+    quedan = [c['negocio'] for c in sin_cuentas_internas(internas)]
+    assert quedan == ['Real', 'Viejo sin el campo'], quedan
+    print('OK  sin_cuentas_internas: la cuenta interna no llega al calculo')
+
+    # Fecha con Z, como figura en el ejemplo del endpoint (los datos reales
+    # llegan con +00:00; los dos formatos tienen que andar).
+    assert corte('2026-01-15T12:00:00.000Z') == 15
+    assert corte('2026-01-20T12:00:00.000Z') == 30
+
+    # De punta a punta con la forma NUEVA del endpoint, para tener probado el
+    # dia que empiecen a llegar telefono y pagos de verdad.
+    reales = sin_cuentas_internas([
+        {'id': 'b1a2', 'telefono': '0341 353-9510', 'negocio': 'Barber Valen',
+         'alta': '2026-01-15T12:00:00.000Z', 'estado': 'activo', 'baja': None,
+         'es_cuenta_interna': False,
+         'pagos': [{'fecha': '2026-02-15', 'monto': 24990, 'periodo': '2026-02'}]},
+        {'id': 'c3d4', 'telefono': '+54 9 11 2620-5229', 'negocio': 'Spa Norte',
+         'alta': '2026-02-20T09:00:00.000Z', 'estado': 'cancelado',
+         'baja': '2026-03-10', 'es_cuenta_interna': False,
+         'pagos': [{'fecha': '2026-02-20', 'monto': 24990, 'periodo': '2026-02'}]},
+        {'id': 'demo', 'telefono': '0341 353-9510', 'negocio': 'Demo de Augusto',
+         'alta': '2026-01-01T00:00:00.000Z', 'estado': 'activo', 'baja': None,
+         'es_cuenta_interna': True,
+         'pagos': [{'fecha': '2026-02-01', 'monto': 99999, 'periodo': '2026-02'}]},
+    ])
+    tv = {canonico('3413539510'): 'Augusto', canonico('1126205229'): 'Valentino'}
+    liq = liquidar(reales, tv, {'Valentino': 'Augusto'})
+    assert len(liq) == 2, f'la cuenta interna se colo en la liquidacion: {liq}'
+    assert not any(f[4] == 99999 for f in liq), 'cobro una comision por la cuenta demo'
+
+    res = resumen_por_vendedor(reales, tv, {'Valentino': 'Augusto'}, ['Augusto', 'Valentino'])
+    # Augusto: 50% de 24990 propio + 20% de los 24990 de Valentino.
+    assert res['Augusto']['comision_propia'] == 12495, res['Augusto']
+    assert res['Augusto']['afiliados']['Valentino']['comision'] == 4998
+    assert res['Augusto']['total'] == 17493, res['Augusto']
+    # El cancelado igual se muestra, con su plata ya cobrada y su etiqueta.
+    assert [n['estado'] for n in res['Valentino']['propios']] == ['Cancelado']
+    print('OK  end-to-end: forma nueva del endpoint, cuenta interna afuera, 50/20 correcto')
 
 
 if __name__ == '__main__':
