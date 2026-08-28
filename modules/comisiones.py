@@ -64,6 +64,25 @@ def estado_label(estado):
     return ESTADO_LABEL.get(estado, (estado or 'sin estado').capitalize())
 
 
+def par_telefono_vendedor(fila):
+    """Una fila leida del rango Telefono..Vendedor -> {clave: vendedor} o {}.
+
+    El vendedor se toma por su POSICION exacta, nunca con fila[-1]. Sheets
+    recorta las celdas vacias del final, asi que en una fila sin vendedor
+    cargado -que son casi todas- el ultimo valor es la Categoria. Con fila[-1]
+    la planilla devolvia 86734 "vendedores" que en realidad eran nichos
+    ("Peluquería", "Centro de estética"), y una comision se le hubiera
+    liquidado a una categoria en vez de a una persona.
+    """
+    from modules.planilla import CLAVE as _CLAVE, IDX as _IDX
+    salto = _IDX['Vendedor'] - _IDX[_CLAVE]
+    if len(fila) <= salto:
+        return {}
+    clave = canonico(fila[0] if fila else '')
+    vendedor = (fila[salto] or '').strip()
+    return {clave: vendedor} if clave and vendedor else {}
+
+
 def sin_cuentas_internas(clientes):
     """Saca las cuentas internas (demos de vendedores, pruebas de desarrollo).
 
@@ -355,6 +374,20 @@ def demo():
     quedan = [c['negocio'] for c in sin_cuentas_internas(internas)]
     assert quedan == ['Real', 'Viejo sin el campo'], quedan
     print('OK  sin_cuentas_internas: la cuenta interna no llega al calculo')
+
+    # El rango leido es Telefono, Categoria, Vendedor. Sheets recorta las
+    # celdas vacias del final, asi que la fila SIN vendedor llega con 2
+    # elementos y la ultima es la categoria: no puede colarse como vendedor.
+    assert par_telefono_vendedor(['0341 353-9510', 'Barbería', 'Augusto']) == \
+        {'3413539510': 'Augusto'}
+    assert par_telefono_vendedor(['0341 353-9510', 'Barbería']) == {}, \
+        'la categoria se colo como vendedor'
+    assert par_telefono_vendedor(['0341 353-9510']) == {}
+    assert par_telefono_vendedor(['0341 353-9510', 'Barbería', '   ']) == {}
+    assert par_telefono_vendedor(['sin telefono', 'Barbería', 'Augusto']) == {}, \
+        'sin telefono valido no hay clave para cruzar'
+    assert par_telefono_vendedor([]) == {}
+    print('OK  par_telefono_vendedor: la categoria nunca se hace pasar por vendedor')
 
     # Fecha con Z, como figura en el ejemplo del endpoint (los datos reales
     # llegan con +00:00; los dos formatos tienen que andar).

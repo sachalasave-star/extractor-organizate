@@ -35,7 +35,7 @@ from armar_planilla import MAX_VENDEDORES
 from modules.comisiones import (COLUMNAS_LIQUIDACION, COLUMNAS_REFERIDOS, COLOR_ESTADO,
                                 LIQUIDACION, REFERIDOS, RESUMEN_COMISIONES,
                                 filas_resumen, liquidar, obtener_clientes,
-                                resumen_por_vendedor)
+                                par_telefono_vendedor, resumen_por_vendedor)
 from modules.estilo import (BLANCO, DINERO, FUENTE, FUENTE_DATOS, LINEA, TINTA,
                             TINTA_SUAVE, hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, CONFIG, FILA_VENDEDORES, IDX, PANEL, RANKING,
@@ -151,11 +151,7 @@ def _telefono_a_vendedor(libro):
     salida = {}
     for rango in leidas.get('valueRanges', []):
         for fila in rango.get('values', []):
-            tel = fila[0] if fila else ''
-            vend = fila[-1] if len(fila) > 1 else ''
-            c = canonico(tel)
-            if c and vend:
-                salida[c] = vend
+            salida.update(par_telefono_vendedor(fila))
     return salida
 
 
