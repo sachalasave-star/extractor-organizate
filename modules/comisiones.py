@@ -31,6 +31,12 @@ COLUMNAS_LIQUIDACION = ['Cliente', 'Negocio', 'Teléfono', 'Período', 'Monto',
                         'Comisión referido', 'Organizate', 'Corte', 'Alta']
 COLUMNAS_REFERIDOS = ['Vendedor', 'Referido por']
 
+ASIGNAR = '🔗 Asignar a mano'
+# El ID va ultimo y angosto: es la clave con la que se guarda la asignacion
+# entre corridas, no algo para leer. El nombre del negocio no sirve de clave
+# porque el dueño lo puede cambiar cuando quiera.
+COLUMNAS_ASIGNAR = ['Negocio en Organizate', 'Alta', 'Estado', 'Vendedor', 'ID']
+
 # Como llega 'estado' del endpoint -> como se muestra.
 #   activo      paga hoy
 #   demo        en prueba, todavia no pago nunca
@@ -128,20 +134,50 @@ def corte(fecha_alta):
     return 15 if dia <= 15 else 30
 
 
-def liquidar(clientes, telefono_a_vendedor, referido_por):
+def vendedor_por_cliente(clientes, telefono_a_vendedor, a_mano=None):
+    """{id de cliente: vendedor}, resolviendo por telefono y, si no cruza, por
+    lo asignado a mano.
+
+    El telefono nunca va a cruzar el 100%: un negocio se registra con el
+    celular del dueño y en Maps figura el fijo del local, o se registro antes
+    de que la web pidiera telefono (los 9 primeros clientes de Organizate
+    estan en ese caso y ya no tiene arreglo). Para esos existe la hoja de
+    asignacion manual.
+
+    La asignacion a mano se guarda contra el ID del cliente, no contra el
+    nombre: el nombre lo puede editar el dueño del negocio cuando quiera y ahi
+    se perderia la asignacion.
+    """
+    a_mano = a_mano or {}
+    salida = {}
+    for c in clientes:
+        cid = c.get('id', '')
+        vendedor = (telefono_a_vendedor.get(canonico(c.get('telefono', '')))
+                    or a_mano.get(cid, ''))
+        if cid and vendedor:
+            salida[cid] = vendedor
+    return salida
+
+
+def sin_vendedor(clientes, vendedor_de):
+    """Los clientes que no se pudieron atribuir a nadie. Son los que hay que
+    resolver a mano en la planilla."""
+    return [c for c in clientes if not vendedor_de.get(c.get('id', ''))]
+
+
+def liquidar(clientes, vendedor_de, referido_por):
     """[filas] para la hoja Liquidacion: una por cliente por pago cobrado.
 
-    telefono_a_vendedor: {telefono canonico: vendedor}, sale de cruzar las
-    45 hojas de la planilla. referido_por: {vendedor: quien lo trajo}, sale
-    de la hoja Referidos (la completa el equipo a mano).
+    vendedor_de: {id de cliente: vendedor}, lo que devuelve
+    vendedor_por_cliente. referido_por: {vendedor: quien lo trajo}, sale de la
+    hoja Referidos (la completa el equipo a mano).
 
-    Un cliente cuyo telefono no matchea ningun negocio de la planilla no
-    genera fila: no hay a quien pagarle, y una comision al vendedor
-    equivocado es peor que ninguna.
+    Un cliente que no se pudo atribuir a nadie no genera fila: no hay a quien
+    pagarle, y una comision al vendedor equivocado es peor que ninguna.
     """
     filas = []
     for cliente in clientes:
-        vendedor = telefono_a_vendedor.get(canonico(cliente.get('telefono', '')), '')
+        vendedor = vendedor_de.get(cliente.get('id', ''), '')
         if not vendedor:
             continue
         referido = referido_por.get(vendedor, '')
@@ -158,13 +194,13 @@ def liquidar(clientes, telefono_a_vendedor, referido_por):
     return filas
 
 
-def _negocios_de(vendedor, clientes, telefono_a_vendedor):
+def _negocios_de(vendedor, clientes, vendedor_de):
     """Negocios de ESTE vendedor (los que el cerro), con estado y lo pagado
     en total hasta ahora. Incluye demo y cancelados: el pedido es distinguir
     pipeline de plata real, no esconder lo que todavia no cobra."""
     salida = []
     for c in clientes:
-        if telefono_a_vendedor.get(canonico(c.get('telefono', ''))) != vendedor:
+        if vendedor_de.get(c.get('id', '')) != vendedor:
             continue
         total = sum(float(p.get('monto', 0)) for p in c.get('pagos', []))
         salida.append({'negocio': c.get('negocio', ''),
@@ -172,7 +208,7 @@ def _negocios_de(vendedor, clientes, telefono_a_vendedor):
     return salida
 
 
-def resumen_por_vendedor(clientes, telefono_a_vendedor, referido_por, vendedores):
+def resumen_por_vendedor(clientes, vendedor_de, referido_por, vendedores):
     """{vendedor: {propios, comision_propia, afiliados, comision_afiliados, total}}
 
     afiliados es {nombre_afiliado: {negocios, comision}}: quien tiene a quien
@@ -182,14 +218,14 @@ def resumen_por_vendedor(clientes, telefono_a_vendedor, referido_por, vendedores
     """
     resultado = {}
     for v in vendedores:
-        propios = _negocios_de(v, clientes, telefono_a_vendedor)
+        propios = _negocios_de(v, clientes, vendedor_de)
         comision_propia = round(sum(n['total'] for n in propios) * PCT_VENDEDOR, 2)
 
         afiliados = {}
         for a in vendedores:
             if referido_por.get(a) != v:
                 continue
-            negocios_a = _negocios_de(a, clientes, telefono_a_vendedor)
+            negocios_a = _negocios_de(a, clientes, vendedor_de)
             afiliados[a] = {'negocios': negocios_a,
                             'comision': round(sum(n['total'] for n in negocios_a) * PCT_REFERIDO, 2)}
         comision_afiliados = round(sum(info['comision'] for info in afiliados.values()), 2)
@@ -282,7 +318,7 @@ def demo():
     tel_a_vend = {canonico('3413539510'): 'Augusto', canonico('1126205229'): 'Valentino'}
     referido_por = {'Valentino': 'Augusto'}   # Augusto trajo a Valentino
 
-    filas = liquidar(clientes, tel_a_vend, referido_por)
+    filas = liquidar(clientes, vendedor_por_cliente(clientes, tel_a_vend), referido_por)
     assert len(filas) == 3, f'esperaba 3 pagos liquidados (2 de cli_2), dio {len(filas)}'
 
     f1 = next(f for f in filas if f[0] == 'cli_1')
@@ -309,17 +345,19 @@ def demo():
     vendedores = ['Augusto', 'Valentino', 'Joaquin', 'Marto']
     referido_por = {'Valentino': 'Augusto', 'Joaquin': 'Augusto'}
     clientes_r = [
-        {'telefono': '3413539510', 'negocio': 'Barberia A', 'estado': 'activo',
+        {'id': 'r1', 'telefono': '3413539510', 'negocio': 'Barberia A', 'estado': 'activo',
          'pagos': [{'monto': 15000}]},                                  # Augusto, propio
-        {'telefono': '1126205229', 'negocio': 'Spa B', 'estado': 'activo',
+        {'id': 'r2', 'telefono': '1126205229', 'negocio': 'Spa B', 'estado': 'activo',
          'pagos': [{'monto': 10000}]},                                  # Valentino, afiliado de Augusto
-        {'telefono': '3411112222', 'negocio': 'Nails C', 'estado': 'activo',
+        {'id': 'r3', 'telefono': '3411112222', 'negocio': 'Nails C', 'estado': 'activo',
          'pagos': [{'monto': 8000}]},                                   # Joaquin, afiliado de Augusto
-        {'telefono': '3413539510', 'negocio': 'Barberia A demo', 'estado': 'demo', 'pagos': []},
+        {'id': 'r4', 'telefono': '3413539510', 'negocio': 'Barberia A demo',
+         'estado': 'demo', 'pagos': []},
     ]
     tel_a_vend_r = {canonico('3413539510'): 'Augusto', canonico('1126205229'): 'Valentino',
                     canonico('3411112222'): 'Joaquin'}
-    r = resumen_por_vendedor(clientes_r, tel_a_vend_r, referido_por, vendedores)
+    r = resumen_por_vendedor(clientes_r, vendedor_por_cliente(clientes_r, tel_a_vend_r),
+                             referido_por, vendedores)
 
     assert r['Augusto']['comision_propia'] == 7500, r['Augusto']       # 50% de 15000
     assert set(r['Augusto']['afiliados']) == {'Valentino', 'Joaquin'}
@@ -411,11 +449,12 @@ def demo():
          'pagos': [{'fecha': '2026-02-01', 'monto': 99999, 'periodo': '2026-02'}]},
     ])
     tv = {canonico('3413539510'): 'Augusto', canonico('1126205229'): 'Valentino'}
-    liq = liquidar(reales, tv, {'Valentino': 'Augusto'})
+    vd = vendedor_por_cliente(reales, tv)
+    liq = liquidar(reales, vd, {'Valentino': 'Augusto'})
     assert len(liq) == 2, f'la cuenta interna se colo en la liquidacion: {liq}'
     assert not any(f[4] == 99999 for f in liq), 'cobro una comision por la cuenta demo'
 
-    res = resumen_por_vendedor(reales, tv, {'Valentino': 'Augusto'}, ['Augusto', 'Valentino'])
+    res = resumen_por_vendedor(reales, vd, {'Valentino': 'Augusto'}, ['Augusto', 'Valentino'])
     # Augusto: 50% de 24990 propio + 20% de los 24990 de Valentino.
     assert res['Augusto']['comision_propia'] == 12495, res['Augusto']
     assert res['Augusto']['afiliados']['Valentino']['comision'] == 4998
@@ -423,6 +462,39 @@ def demo():
     # El cancelado igual se muestra, con su plata ya cobrada y su etiqueta.
     assert [n['estado'] for n in res['Valentino']['propios']] == ['Cancelado']
     print('OK  end-to-end: forma nueva del endpoint, cuenta interna afuera, 50/20 correcto')
+
+    # Asignacion a mano: el caso de los 9 primeros clientes de Organizate, que
+    # se registraron antes de que la web pidiera telefono y por eso lo tienen
+    # en null para siempre.
+    viejos = [
+        {'id': 'uuid-1', 'negocio': 'Pestañas ROSARIO', 'telefono': None,
+         'alta': '2026-07-09T13:16:45+00:00', 'estado': 'activo',
+         'pagos': [{'periodo': '2026-08', 'monto': 24990}]},
+        {'id': 'uuid-2', 'negocio': 'Estetica Peralta', 'telefono': None,
+         'alta': '2026-07-16T14:09:10+00:00', 'estado': 'abandonado', 'pagos': []},
+    ]
+    # Sin asignar nada: nadie cobra y los dos figuran como pendientes.
+    vacio = vendedor_por_cliente(viejos, {})
+    assert vacio == {}, vacio
+    assert len(sin_vendedor(viejos, vacio)) == 2
+    assert liquidar(viejos, vacio, {}) == [], 'sin vendedor no se puede liquidar'
+
+    # Con la asignacion a mano el cliente activo ya cobra.
+    vd2 = vendedor_por_cliente(viejos, {}, {'uuid-1': 'Marto'})
+    assert vd2 == {'uuid-1': 'Marto'}, vd2
+    assert [c['negocio'] for c in sin_vendedor(viejos, vd2)] == ['Estetica Peralta']
+    liq2 = liquidar(viejos, vd2, {'Marto': 'Gige'})
+    assert len(liq2) == 1 and liq2[0][5] == 'Marto'
+    assert liq2[0][6] == 12495, liq2[0]                    # 50% de 24990
+    assert liq2[0][7] == 'Gige' and liq2[0][8] == 4998     # 20% para quien lo trajo
+
+    # El telefono, cuando existe, le gana a lo cargado a mano: el dato de la
+    # planilla es el que mantiene el equipo, la asignacion manual es el parche.
+    con_tel = [{'id': 'uuid-3', 'telefono': '0341 353-9510', 'negocio': 'X', 'pagos': []}]
+    gana = vendedor_por_cliente(con_tel, {canonico('3413539510'): 'Augusto'},
+                                {'uuid-3': 'Marto'})
+    assert gana == {'uuid-3': 'Augusto'}, gana
+    print('OK  asignacion a mano: rescata al cliente sin telefono, y el telefono manda')
 
 
 if __name__ == '__main__':

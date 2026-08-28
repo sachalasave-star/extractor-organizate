@@ -32,19 +32,20 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 from armar_planilla import MAX_VENDEDORES
-from modules.comisiones import (COLUMNAS_LIQUIDACION, COLUMNAS_REFERIDOS, COLOR_ESTADO,
-                                LIQUIDACION, REFERIDOS, RESUMEN_COMISIONES,
+from modules.comisiones import (ASIGNAR, COLUMNAS_ASIGNAR, COLUMNAS_LIQUIDACION,
+                                COLUMNAS_REFERIDOS, COLOR_ESTADO, LIQUIDACION,
+                                REFERIDOS, RESUMEN_COMISIONES, estado_label,
                                 filas_resumen, liquidar, obtener_clientes,
-                                par_telefono_vendedor, resumen_por_vendedor)
+                                par_telefono_vendedor, resumen_por_vendedor,
+                                sin_vendedor, vendedor_por_cliente)
 from modules.estilo import (BLANCO, DINERO, FUENTE, FUENTE_DATOS, LINEA, TINTA,
                             TINTA_SUAVE, hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, CONFIG, FILA_VENDEDORES, IDX, PANEL, RANKING,
                               RESUMEN, col_letra, reintentar)
-from modules.telefono import canonico
 from sincronizar_sheets import _abrir_libro, _credenciales, _sheet_id
 
 FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, LIQUIDACION, REFERIDOS,
-                   RESUMEN_COMISIONES)
+                   RESUMEN_COMISIONES, ASIGNAR)
 
 # Referidos: 1 titulo, 2 ayuda, 3 encabezados, 4 en adelante los vendedores.
 FILA_DATOS_REFERIDOS = 4
@@ -254,6 +255,101 @@ def _hoja_referidos(libro, vendedores):
     return h, vigente, duro
 
 
+# ----------------------------------------------------------- Asignar a mano
+
+def _hoja_asignar(libro, pendientes, vendedores):
+    """Los clientes que el telefono no pudo atribuir, para resolver a mano.
+    -> {id de cliente: vendedor}
+
+    Lista TODOS los que no cruzan por telefono, incluidos los que ya tienen
+    vendedor cargado. Si se listaran solo los que faltan, el cliente
+    desapareceria de la hoja apenas se lo asigna y en la corrida siguiente se
+    perderia lo cargado.
+
+    La clave es el ID de Organizate, no el nombre: el dueño del negocio puede
+    renombrarlo cuando quiera.
+    """
+    previo = {}
+    try:
+        vieja = libro.worksheet(ASIGNAR)
+    except Exception:
+        vieja = None
+    if vieja is not None:
+        # Leer antes de borrar, igual que en Referidos: es trabajo manual que
+        # no se puede regenerar solo.
+        col_v, col_id = COLUMNAS_ASIGNAR.index('Vendedor'), COLUMNAS_ASIGNAR.index('ID')
+        for fila in reintentar(vieja.get_all_values)[FILA_DATOS_REFERIDOS - 1:]:
+            if len(fila) > col_id and fila[col_id].strip() and fila[col_v].strip():
+                previo[fila[col_id].strip()] = fila[col_v].strip()
+        reintentar(libro.del_worksheet, vieja)
+
+    filas = [['🔗 ASIGNAR A MANO — clientes que no cruzaron por teléfono', '', '', '', ''],
+             ['Se registraron con otro número (o antes de que la web lo pidiera). '
+              'Elegí quién lo vendió y cobra la comisión igual.', '', '', '', ''],
+             COLUMNAS_ASIGNAR]
+    for c in pendientes:
+        cid = c.get('id', '')
+        filas.append([c.get('negocio', ''), (c.get('alta') or '')[:10],
+                      estado_label(c.get('estado', '')), previo.get(cid, ''), cid])
+
+    h = _rehacer(libro, ASIGNAR, filas, cols=len(COLUMNAS_ASIGNAR))
+    reintentar(libro.batch_update,
+               {"requests": _formato_asignar(h.id, len(pendientes))})
+    _proteger(libro, h.id,
+              "Asignacion manual de ventas. Solo la edita el dueño.")
+    return {c.get('id', ''): previo[c['id']] for c in pendientes if c.get('id') in previo}
+
+
+def _formato_asignar(sid, n):
+    oscuro, claro = DINERO
+    ultima = FILA_DATOS_REFERIDOS - 1 + n
+    ncols = len(COLUMNAS_ASIGNAR)
+    col_v = COLUMNAS_ASIGNAR.index('Vendedor')
+    fmt_tit, campos_tit = _texto(negrita=True, tam=13, color=BLANCO, fondo=oscuro)
+    fmt_ayu, campos_ayu = _texto(tam=9, color=TINTA_SUAVE, fondo=claro, italica=True)
+    fmt_enc, campos_enc = _texto(negrita=True, tam=10, color=TINTA, fondo=claro)
+    reqs = [
+        _fusionar(sid, 0, ncols), _celda(sid, 0, fmt_tit, campos_tit, col1=ncols),
+        _fusionar(sid, 1, ncols), _celda(sid, 1, fmt_ayu, campos_ayu, col1=ncols),
+        _celda(sid, 2, fmt_enc, campos_enc, col1=ncols),
+        # El ID es la clave tecnica: se muestra en gris y chico para que no
+        # compita con el nombre del negocio, que es lo que se lee.
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 3, "endRowIndex": max(ultima, 4),
+                      "startColumnIndex": ncols - 1, "endColumnIndex": ncols},
+            "cell": {"userEnteredFormat": {"textFormat": {
+                "fontSize": 8, "foregroundColor": rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            "fields": "userEnteredFormat.textFormat"}},
+        {"setDataValidation": {
+            "range": {"sheetId": sid, "startRowIndex": 3, "endRowIndex": max(ultima, 4),
+                      "startColumnIndex": col_v, "endColumnIndex": col_v + 1},
+            "rule": {"condition": {"type": "ONE_OF_RANGE", "values": [{"userEnteredValue":
+                     f"='{CONFIG}'!$A${FILA_VENDEDORES}:$A${FILA_VENDEDORES + MAX_VENDEDORES}"}]},
+                     "showCustomUi": True, "strict": False}}},
+        {"updateSheetProperties": {
+            "properties": {"sheetId": sid, "tabColor": rgb(hex_a_rgb(oscuro)),
+                           "gridProperties": {"frozenRowCount": 3}},
+            "fields": "tabColor,gridProperties.frozenRowCount"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 42}, "fields": "pixelSize"}},
+    ]
+    for i, ancho in enumerate((300, 100, 120, 170, 230)):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": ancho}, "fields": "pixelSize"}})
+    for i, (etiqueta, (fondo, texto)) in enumerate(COLOR_ESTADO.items()):
+        reqs.append({"addConditionalFormatRule": {"index": i, "rule": {
+            "ranges": [{"sheetId": sid, "startRowIndex": 3, "endRowIndex": max(ultima, 4),
+                        "startColumnIndex": 2, "endColumnIndex": 3}],
+            "booleanRule": {
+                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": etiqueta}]},
+                "format": {"backgroundColor": rgb(fondo),
+                           "textFormat": {"foregroundColor": rgb(texto), "bold": True}}}}}})
+    return reqs
+
+
 # --------------------------------------------------- Comisiones por vendedor
 
 def _formato_resumen(sid, marcas, n_filas):
@@ -388,17 +484,31 @@ def main():
           f"{'' if duro else ' (proteccion en modo aviso: falta SHEET_OWNER)'}")
 
     clientes = obtener_clientes()
-    _hoja_liquidacion(libro, liquidar(clientes, tel_a_vend, referido_por))
 
-    resumen = resumen_por_vendedor(clientes, tel_a_vend, referido_por, vendedores)
+    # El telefono resuelve solo; lo que no cruza cae en la hoja de asignacion
+    # manual, que es la unica forma de rescatar al cliente que se registro con
+    # otro numero (o antes de que la web pidiera telefono).
+    por_telefono = vendedor_por_cliente(clientes, tel_a_vend)
+    pendientes = sin_vendedor(clientes, por_telefono)
+    a_mano = _hoja_asignar(libro, pendientes, vendedores)
+    print(f"   {ASIGNAR}: {len(pendientes)} sin cruce por teléfono, "
+          f"{len(a_mano)} ya asignados a mano")
+
+    vendedor_de = vendedor_por_cliente(clientes, tel_a_vend, a_mano)
+    _hoja_liquidacion(libro, liquidar(clientes, vendedor_de, referido_por))
+
+    resumen = resumen_por_vendedor(clientes, vendedor_de, referido_por, vendedores)
     filas, marcas = filas_resumen(resumen)
     _hoja_resumen_comisiones(libro, filas, marcas)
 
     cobran = sum(1 for i in resumen.values() if i['total'])
-    sin_match = sum(1 for c in clientes if not tel_a_vend.get(canonico(c.get('telefono', ''))))
+    con_pagos = sum(1 for c in clientes if c.get('pagos'))
     print(f"   {RESUMEN_COMISIONES}: {cobran} de {len(vendedores)} vendedores cobran algo")
-    print(f"{len(clientes)} clientes en Organizate"
-          f"{f', {sin_match} sin match en la planilla' if sin_match else ''}.")
+    print(f"{len(clientes)} clientes en Organizate, {len(vendedor_de)} atribuidos a un "
+          f"vendedor, {con_pagos} con pagos registrados.")
+    if clientes and not con_pagos:
+        print("   OJO: ningun cliente tiene pagos registrados, asi que no hay "
+              "comision que calcular todavia (falta el webhook de Mercado Pago).")
 
 
 if __name__ == "__main__":
