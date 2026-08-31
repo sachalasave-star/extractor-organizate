@@ -48,7 +48,10 @@ def _sheet_id():
     return os.environ.get("SHEET_ID", "").strip('﻿ \t\r\n')
 
 
-def _abrir_libro():
+def _cliente_gspread():
+    """El cliente autenticado. Aparte de _abrir_libro porque repartir_leads.py
+    tiene que abrir tambien el archivo personal de cada vendedor, que son otros
+    spreadsheets."""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -56,11 +59,14 @@ def _abrir_libro():
         sys.exit("Falta gspread: pip install gspread google-auth")
     cred = Credentials.from_service_account_info(
         _credenciales(), scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    cliente = gspread.authorize(cred)
+    return gspread.authorize(cred)
+
+
+def _abrir_libro():
     # Abrir el libro es la unica llamada a Google que no estaba adentro de un
     # reintentar: un 503 justo aca (paso el 20/8) tiraba abajo la sync entera
     # y ninguna fila nueva llegaba a la planilla esa corrida.
-    return reintentar(cliente.open_by_key, _sheet_id())
+    return reintentar(_cliente_gspread().open_by_key, _sheet_id())
 
 
 def nuevos_por_nicho(df, ya_cargados):
