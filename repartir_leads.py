@@ -5,7 +5,7 @@
 
 Cada vendedor tiene su propio archivo con su lote. No ve la base ni el trabajo
 de los demas. El archivo se lo crea el Apps Script (apps_script/Vendedores.gs);
-aca se le carga el lote y se le lee lo que gestiono.
+aca se le carga el lote, se le lee lo que gestiono y se le arma el panel.
 
 En cada corrida, por cada vendedor:
 
@@ -13,9 +13,13 @@ En cada corrida, por cada vendedor:
      Observaciones). Si algo cambio respecto del master, se le pone la fecha
      de hoy en Ultima gestion: el master hace de foto anterior, asi que no
      hace falta ni un trigger ni guardar un snapshot aparte.
-  2. Se decide si le toca lote nuevo (modules/asignacion.puede_reponer).
-  3. Si le toca: salen de su archivo los leads cerrados, quedan los que
-     siguen vivos, y se completa hasta 30 con leads nuevos.
+  2. Se mira que nicho eligio en su panel. Si pidio uno distinto del que esta
+     trabajando, se le cambia (ver `puede_cambiar_nicho` para cuando si y
+     cuando no).
+  3. Se decide si le toca lote nuevo (modules/asignacion.puede_reponer).
+  4. Si le toca: salen de su archivo los leads cerrados, quedan los que
+     siguen vivos, y se completa hasta 30 con leads nuevos del nicho elegido.
+  5. Se le reescribe el panel con como viene y que le falta para el proximo.
 
 Necesita GOOGLE_CREDENTIALS y SHEET_ID, igual que el resto del pipeline.
 """
@@ -27,11 +31,23 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 import pandas as pd
 
-from modules.asignacion import LOTE, elegir_lote, puede_reponer, resumen_lote, _clave
+from collections import Counter
+
+from modules.asignacion import (LOTE, contactado, elegir_lote, minimo_para,
+                                puede_cambiar_nicho, puede_reponer, resumen_lote,
+                                _clave)
+from modules.estilo import (BLANCO, DINERO, FUENTE, TINTA, TINTA_SUAVE,
+                            hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, COLUMNAS, CONFIG, FILA_VENDEDORES, IDX,
                               SIN_CONTACTAR, col_letra, reintentar)
 from modules.telefono import canonico
 from sincronizar_sheets import GENERADO, _abrir_libro, _cliente_gspread, _sheet_id
+
+# Las dos hojas del archivo personal. El panel lo crea Python (agregar una
+# hoja a un archivo que ya existe no consume cuota de Drive, crearlo si);
+# la de leads la crea el Apps Script con este nombre exacto.
+HOJA_VENDEDOR = 'Mis clientes'
+PANEL_VENDEDOR = '📊 Mi panel'
 
 # Columnas del archivo personal, en el orden que las crea el Apps Script.
 # Si se tocan alla, hay que tocarlas aca: es el unico acoplamiento entre los dos.
@@ -93,14 +109,29 @@ def estado_del_master(libro, titulos):
     return salida
 
 
-def leer_archivo(cliente, archivo_id):
+def _hoja_leads(libro):
+    """La hoja de leads del vendedor.
+
+    Por nombre y no por `.sheet1`: desde que existe el panel, la primera hoja
+    del archivo es el panel, y leer esa seria leer cualquier cosa.
+    """
+    hojas = reintentar(libro.worksheets)
+    for h in hojas:
+        if h.title == HOJA_VENDEDOR:
+            return h
+    for h in hojas:                        # archivo armado a mano, sin el nombre
+        if h.title != PANEL_VENDEDOR:
+            return h
+    raise RuntimeError('el archivo no tiene hoja de leads')
+
+
+def leer_archivo(hoja):
     """Las filas del archivo del vendedor, con TODAS sus columnas.
 
     Se leen todas y no solo las tres que el vendedor edita, porque cuando le
     toca lote nuevo el archivo se rearma: si aca se perdiera Ciudad o Link en
     Maps, los seguimientos que se conservan quedarian sin esos datos.
     """
-    hoja = reintentar(cliente.open_by_key, archivo_id).sheet1
     filas = reintentar(hoja.get_all_values)[1:]
     salida = []
     for f in filas:
@@ -195,6 +226,209 @@ def _fila_conservada(f):
     return fila
 
 
+# --------------------------------------------------------------------------
+# El panel del vendedor
+#
+# Una hoja de dos columnas al frente del archivo: como viene el lote, que le
+# falta para el proximo, y el unico control que tiene, el desplegable de nicho.
+# La fila 5 (Nicho) es lo unico que se deja editable.
+# --------------------------------------------------------------------------
+
+FILA_NICHO = 5                # B5: el desplegable
+ALTO_PANEL = 16               # filas que ocupa
+TITULOS = (1, 4, 9, 15)       # filas que son encabezado de seccion
+MENSAJES = (2, 7, 16)         # filas de texto largo, van con wrap
+
+
+def _hoja_panel(libro, crear=True):
+    """(hoja, recien_creada). Sin crear devuelve (None, False) si no existe."""
+    for h in reintentar(libro.worksheets):
+        if h.title == PANEL_VENDEDOR:
+            return h, False
+    if not crear:
+        return None, False
+    hoja = reintentar(libro.add_worksheet, title=PANEL_VENDEDOR,
+                      rows=ALTO_PANEL + 4, cols=2, index=0)
+    return hoja, True
+
+
+def leer_nicho_elegido(hoja):
+    """Lo que el vendedor dejo en el desplegable de nicho."""
+    return (reintentar(hoja.acell, f'B{FILA_NICHO}').value or '').strip()
+
+
+def mensaje_nicho(elegido, actual, puede, motivo, repone):
+    """Que decirle sobre el cambio de nicho, en castellano.
+
+    `actual` es el nicho que EFECTIVAMENTE quedo en su lote despues de repartir,
+    asi que si pidio uno y quedo otro, o se le nego el cambio o el nicho que
+    pidio se quedo sin negocios. Las dos cosas hay que decirselas distinto.
+    """
+    if not elegido or elegido == actual:
+        return ('Podes cambiar de nicho hasta la llamada 10, y otra vez cada vez que te '
+                'entra un lote nuevo. Elegi del desplegable y se cambia solo.')
+    if puede or repone:
+        return (f'No quedan negocios de {elegido} sin repartir, asi que seguis en '
+                f'{actual}. Proba con otro rubro.')
+    return (f'Pediste {elegido} pero {motivo}. Tu lote sigue siendo {actual}: '
+            f'cuando lo termines te lo cambiamos.')
+
+
+def mensaje_proximo(res, minimo):
+    """Que le falta para que le entre otro lote."""
+    if not res['asignados']:
+        return 'Todavia no tenes leads. Te entran en la proxima actualizacion.'
+    if res['sin_contactar']:
+        return (f"Te faltan {res['sin_contactar']} por contactar. Cuando llames a los "
+                f"{res['asignados']} y hayas hablado con {minimo}, te entra "
+                f'un lote nuevo.')
+    if res['hablados'] < minimo:
+        return (f"Ya contactaste a los {res['asignados']}. Te faltan "
+                f"{minimo - res['hablados']} conversaciones para que entre "
+                f'el lote nuevo.')
+    return 'Listo: en la proxima actualizacion te entra un lote nuevo.'
+
+
+def filas_panel(nombre, nicho, ciudad, res, aviso_nicho, aviso_proximo):
+    """Las 16 filas del panel. Logica pura: se testea sin tocar Google."""
+    return [
+        [f'Panel de {nombre}', ''],
+        ['Se actualiza solo dos veces por dia. Vos solo tocas el nicho.', ''],
+        ['', ''],
+        ['MI NICHO', ''],
+        ['Nicho', nicho or '(sin asignar)'],
+        ['Ciudad', ciudad or '-'],
+        [aviso_nicho, ''],
+        ['', ''],
+        ['MI LOTE', ''],
+        ['Negocios asignados', res['asignados']],
+        ['Ya contactados', res['contactados']],
+        ['Con los que hablaste', res['hablados']],
+        ['Sin contactar', res['sin_contactar']],
+        ['', ''],
+        ['PROXIMO LOTE', ''],
+        [aviso_proximo, ''],
+    ]
+
+
+def _formato_panel(libro, hoja, nichos):
+    """El maquillaje, una sola vez cuando se crea la hoja."""
+    sid = hoja.id
+    oscuro, claro = (rgb(hex_a_rgb(c)) for c in DINERO)
+
+    def rango(f1, f2, c1=0, c2=2):
+        return {'sheetId': sid, 'startRowIndex': f1 - 1, 'endRowIndex': f2,
+                'startColumnIndex': c1, 'endColumnIndex': c2}
+
+    def celdas(f1, f2, fmt, campos, c1=0, c2=2):
+        return {'repeatCell': {'range': rango(f1, f2, c1, c2),
+                               'cell': {'userEnteredFormat': fmt}, 'fields': campos}}
+
+    reqs = [
+        {'updateSheetProperties': {
+            'properties': {'sheetId': sid, 'gridProperties': {'hideGridlines': True}},
+            'fields': 'gridProperties.hideGridlines'}},
+        {'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'COLUMNS',
+                      'startIndex': 0, 'endIndex': 1},
+            'properties': {'pixelSize': 215}, 'fields': 'pixelSize'}},
+        {'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'COLUMNS',
+                      'startIndex': 1, 'endIndex': 2},
+            'properties': {'pixelSize': 300}, 'fields': 'pixelSize'}},
+        # base: misma tipografia y aire vertical en todo el panel
+        celdas(1, ALTO_PANEL,
+               {'verticalAlignment': 'MIDDLE',
+                'textFormat': {'fontFamily': FUENTE, 'fontSize': 10,
+                               'foregroundColor': rgb(hex_a_rgb(TINTA))}},
+               'userEnteredFormat(verticalAlignment,textFormat)'),
+    ]
+
+    # El nombre, arriba de todo.
+    reqs += [
+        {'mergeCells': {'range': rango(1, 1), 'mergeType': 'MERGE_ALL'}},
+        {'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'ROWS',
+                      'startIndex': 0, 'endIndex': 1},
+            'properties': {'pixelSize': 52}, 'fields': 'pixelSize'}},
+        celdas(1, 1, {'backgroundColor': oscuro, 'horizontalAlignment': 'CENTER',
+                      'textFormat': {'bold': True, 'fontSize': 16,
+                                     'foregroundColor': rgb(hex_a_rgb(BLANCO))}},
+               'userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)'),
+    ]
+
+    # Encabezados de seccion.
+    for f in TITULOS[1:]:
+        reqs += [
+            {'mergeCells': {'range': rango(f, f), 'mergeType': 'MERGE_ALL'}},
+            celdas(f, f, {'backgroundColor': claro,
+                          'textFormat': {'bold': True, 'fontSize': 9,
+                                         'foregroundColor': oscuro}},
+                   'userEnteredFormat(backgroundColor,textFormat)'),
+        ]
+
+    # Mensajes: una celda ancha, chica y que ajuste sola.
+    for f in MENSAJES:
+        reqs += [
+            {'mergeCells': {'range': rango(f, f), 'mergeType': 'MERGE_ALL'}},
+            celdas(f, f, {'wrapStrategy': 'WRAP',
+                          'textFormat': {'italic': True, 'fontSize': 9,
+                                         'foregroundColor': rgb(hex_a_rgb(TINTA_SUAVE))}},
+                   'userEnteredFormat(wrapStrategy,textFormat)'),
+        ]
+
+    # Los numeros del lote, grandes y pegados a su etiqueta.
+    reqs.append(celdas(10, 13, {'horizontalAlignment': 'RIGHT',
+                                'textFormat': {'bold': True, 'fontSize': 13}},
+                       'userEnteredFormat(horizontalAlignment,textFormat)', 1, 2))
+
+    # El desplegable de nicho: lo unico editable, con marco para que se note.
+    reqs += [
+        {'setDataValidation': {
+            'range': rango(FILA_NICHO, FILA_NICHO, 1, 2),
+            'rule': {'condition': {'type': 'ONE_OF_LIST',
+                                   'values': [{'userEnteredValue': n} for n in nichos]},
+                     'showCustomUi': True, 'strict': False,
+                     'inputMessage': 'Elegi el rubro que queres trabajar'}}},
+        celdas(FILA_NICHO, FILA_NICHO,
+               {'backgroundColor': rgb(hex_a_rgb('#FFF8E1')),
+                'textFormat': {'bold': True, 'fontSize': 11}},
+               'userEnteredFormat(backgroundColor,textFormat)', 1, 2),
+        {'updateBorders': dict(
+            {'range': rango(FILA_NICHO, FILA_NICHO, 1, 2)},
+            **{lado: {'style': 'SOLID', 'color': oscuro}
+               for lado in ('top', 'bottom', 'left', 'right')})},
+    ]
+
+    # Todo protegido menos la fila del nicho, en modo aviso: el archivo es del
+    # vendedor, no hace falta trabarlo. Alcanza con que Sheets le avise antes
+    # de pisar algo que igual se reescribe en la proxima corrida.
+    for f1, f2 in ((1, FILA_NICHO - 1), (FILA_NICHO + 1, ALTO_PANEL)):
+        reqs.append({'addProtectedRange': {'protectedRange': {
+            'range': rango(f1, f2), 'warningOnly': True,
+            'description': 'Lo escribe el sistema'}}})
+
+    reqs.append({'updateSheetProperties': {
+        'properties': {'sheetId': sid, 'tabColor': oscuro}, 'fields': 'tabColor'}})
+
+    reintentar(libro.batch_update, {'requests': reqs})
+
+
+def _mas_comun(valores):
+    valores = [v for v in valores if v]
+    return Counter(valores).most_common(1)[0][0] if valores else ''
+
+
+def nicho_y_ciudad(filas, por_clave):
+    """Que esta trabajando hoy el vendedor, deducido de sus propios leads.
+
+    El nicho no se guarda en ningun lado: sale de cruzar sus leads contra el
+    Excel. Un estado menos que mantener sincronizado.
+    """
+    nicho = _mas_comun([por_clave.get(f['clave'], {}).get('nicho') for f in filas])
+    return nicho, _mas_comun([f.get('ciudad') for f in filas])
+
+
 def leads_del_excel(generado=GENERADO):
     """Todos los negocios del Excel, en el formato que espera elegir_lote."""
     df = pd.read_excel(generado, sheet_name='Todos', dtype=str).fillna('')
@@ -238,14 +472,53 @@ def main(simular=False):
                    if not master.get(_clave(l), {}).get('vendedor')]
     tomados = {k for k, m in master.items() if m['vendedor']}
 
-    escrituras_master, nuevas_asignaciones = [], []
+    # El desplegable ofrece solo nichos que todavia tienen leads sin repartir:
+    # elegir uno vacio seria elegir quedarse sin lote.
+    nichos = sorted({l['nicho'] for l in disponibles if l.get('nicho')})
+
+    escrituras_master, nuevas_asignaciones, paneles = [], [], []
 
     for v in vendedores:
         try:
-            filas = leer_archivo(cliente, v['archivo'])
+            libro_v = reintentar(cliente.open_by_key, v['archivo'])
+            hoja_leads = _hoja_leads(libro_v)
+            filas = leer_archivo(hoja_leads)
+            hoja_panel, panel_nuevo = _hoja_panel(libro_v, crear=not simular)
         except Exception as e:
             print(f"   {v['nombre']}: no pude abrir su archivo ({str(e)[:60]}), lo salteo")
             continue
+
+        if panel_nuevo:
+            try:
+                _formato_panel(libro_v, hoja_panel, nichos)
+            except Exception:
+                # Sin formato la hoja queda inservible, y ninguna corrida la
+                # volveria a formatear porque ya existe. Se borra y se reintenta
+                # de cero la proxima vez.
+                reintentar(libro_v.del_worksheet, hoja_panel)
+                raise
+            print(f"   {v['nombre']}: panel creado")
+
+        def tomar(nicho, faltan):
+            """Saca `faltan` leads del pozo y se los anota en el master."""
+            nonlocal disponibles
+            if faltan <= 0:
+                return []
+            pozo = [l for l in disponibles if l.get('nicho') == nicho] if nicho else disponibles
+            elegidos = elegir_lote(pozo, faltan, tomados)
+            if not elegidos and nicho:      # el nicho pedido se quedo sin leads
+                elegidos = elegir_lote(disponibles, faltan, tomados)
+            for lead in elegidos:
+                clave = _clave(lead)
+                tomados.add(clave)
+                m = master.get(clave)
+                if m:
+                    escrituras_master.append({
+                        'range': f"'{m['hoja']}'!{col_letra(IDX['Vendedor'])}{m['fila']}",
+                        'values': [[v['nombre']]]})
+                    m['vendedor'] = v['nombre']
+            disponibles = [l for l in disponibles if _clave(l) not in tomados]
+            return elegidos
 
         # 0. Lo que el master le tiene asignado de antes y no esta en su
         # archivo se suma ahora: es gestion ya hecha y no se puede perder.
@@ -267,50 +540,74 @@ def main(simular=False):
             m.update(estado=f['estado'], motivo=f['motivo'],
                      observaciones=f['observaciones'])
 
-        # 2. Le toca lote nuevo?
+        # 2. Que nicho esta trabajando y cual pidio.
+        nicho_actual, ciudad = nicho_y_ciudad(filas, por_clave)
+        elegido = leer_nicho_elegido(hoja_panel) if hoja_panel and not panel_nuevo else ''
+        cambiar = bool(elegido) and elegido != nicho_actual
+        libre, motivo_cambio = puede_cambiar_nicho(filas)
+
+        # 3. Le toca lote nuevo?
         r = resumen_lote(filas)
-        ok, por_que = puede_reponer(filas)
+        repone, por_que = puede_reponer(filas)
         print(f"   {v['nombre']}: {r['asignados']} leads, {r['contactados']} contactados, "
               f"{r['hablados']} hablados, {len(cambios)} cambios -> "
-              f"{'REPONE' if ok else 'sigue'} ({por_que})")
-        # 3. Si repone: salen los cerrados, quedan los vivos y se completa
-        # hasta 30. Si no repone, se queda con lo mismo que tenia.
-        siguen = [f for f in filas if f['estado'] not in ESTADOS_CERRADOS] if ok else filas
-        lote = []
+              f"{'REPONE' if repone else 'sigue'} ({por_que})")
 
-        if ok:
-            faltan = LOTE - len(siguen)
-            if faltan <= 0:
-                print(f'      {len(siguen)} seguimientos abiertos, no entra ninguno nuevo')
+        siguen, lote, sueltos = filas, [], []
+        nicho = elegido if (cambiar and (repone or libre)) else nicho_actual
+
+        if repone:
+            # Lote nuevo: los cerrados salen, los seguimientos se quedan. El
+            # cambio de nicho aca siempre vale: el lote arranca de cero igual.
+            siguen = [f for f in filas if f['estado'] not in ESTADOS_CERRADOS]
+            lote = tomar(nicho, LOTE - len(siguen))
+            if cambiar:
+                print(f'      cambia de nicho: {nicho_actual or "-"} -> {nicho}')
+            if not lote:
+                print(f'      {len(siguen)} seguimientos abiertos, no entra ninguno nuevo'
+                      if len(siguen) >= LOTE else '      no quedan leads para repartir')
             else:
-                lote = elegir_lote(disponibles, faltan, tomados)
-                if not lote:
-                    print('      no quedan leads disponibles para repartir')
-                else:
-                    for lead in lote:
-                        clave = _clave(lead)
-                        tomados.add(clave)
-                        m = master.get(clave)
-                        if m:
-                            escrituras_master.append({
-                                'range': f"'{m['hoja']}'!"
-                                         f"{col_letra(IDX['Vendedor'])}{m['fila']}",
-                                'values': [[v['nombre']]]})
-                            m['vendedor'] = v['nombre']
-                    disponibles = [l for l in disponibles if _clave(l) not in tomados]
-                    print(f"      lote nuevo: {len(lote)} leads "
-                          f"({lote[0].get('nicho')}, {lote[0].get('ciudad')}), "
-                          f"mas {len(siguen)} seguimientos que se quedan")
+                print(f"      lote nuevo: {len(lote)} leads ({lote[0].get('nicho')}, "
+                      f"{lote[0].get('ciudad')}), mas {len(siguen)} seguimientos")
+        elif cambiar and libre:
+            # Cambio a mitad de lote: lo que ya trabajo se queda, lo que ni
+            # miro vuelve a la bolsa para que lo agarre otro.
+            siguen = [f for f in filas if contactado(f['estado'])]
+            sueltos = [f for f in filas if not contactado(f['estado'])]
+            for f in sueltos:
+                m = master.get(f['clave'])
+                if m and m['vendedor'] == v['nombre']:
+                    escrituras_master.append({
+                        'range': f"'{m['hoja']}'!{col_letra(IDX['Vendedor'])}{m['fila']}",
+                        'values': [['']]})
+                    m['vendedor'] = ''
+            lote = tomar(nicho, LOTE - len(siguen))
+            print(f'      cambia de nicho: {nicho_actual or "-"} -> {nicho} '
+                  f'({len(sueltos)} devueltos, {len(lote)} nuevos)')
+        elif cambiar:
+            print(f'      pidio {elegido} pero {motivo_cambio}')
 
-        # Se rearma el archivo si hay lote nuevo, o si hay que meterle los
-        # rescatados aunque no le toque reponer: si no, esos leads se quedarian
-        # asignados a su nombre en el master y el nunca los veria.
-        if lote or rescatados:
+        # Se rearma el archivo si cambio algo de lo que el vendedor ve. Los
+        # rescatados cuentan: si no, quedan asignados a su nombre en el master
+        # y el nunca los ve.
+        if lote or rescatados or sueltos:
             nuevas_asignaciones.append((v, siguen, lote))
 
+        # 4. El panel, siempre: aunque no cambie nada, los numeros se mueven.
+        if hoja_panel:
+            final = siguen + [{'estado': SIN_CONTACTAR, 'motivo': ''} for _ in lote]
+            res = resumen_lote(final)
+            nicho_final = (lote[0].get('nicho') if lote else nicho) or nicho_actual
+            ciudad_final = lote[0].get('ciudad') if lote else ciudad
+            paneles.append((v, hoja_panel, filas_panel(
+                v['nombre'], elegido or nicho_final, ciudad_final, res,
+                mensaje_nicho(elegido, nicho_final, libre, motivo_cambio, repone),
+                mensaje_proximo(res, minimo_para(final)))))
+
     if simular:
-        print(f'\n[SIMULACION] {len(escrituras_master)} escrituras al master y '
-              f'{len(nuevas_asignaciones)} archivos a rearmar. No se escribio nada.')
+        print(f'\n[SIMULACION] {len(escrituras_master)} escrituras al master, '
+              f'{len(nuevas_asignaciones)} archivos a rearmar y {len(paneles)} '
+              f'paneles a refrescar. No se escribio nada.')
         return
 
     if escrituras_master:
@@ -319,13 +616,18 @@ def main(simular=False):
         print(f'\nMaster actualizado: {len(escrituras_master)} celdas')
 
     for v, siguen, lote in nuevas_asignaciones:
-        hoja = reintentar(cliente.open_by_key, v['archivo']).sheet1
+        hoja = _hoja_leads(reintentar(cliente.open_by_key, v['archivo']))
         filas = ([COLUMNAS_VENDEDOR] +
                  [_fila_conservada(f) for f in siguen] +
                  [_fila_para_vendedor(l) for l in lote])
         reintentar(hoja.clear)
         reintentar(hoja.update, values=filas, range_name='A1')
         print(f"   {v['nombre']}: archivo rearmado con {len(filas) - 1} leads")
+
+    for v, hoja, valores in paneles:
+        reintentar(hoja.update, values=valores, range_name=f'A1:B{ALTO_PANEL}')
+    if paneles:
+        print(f'   {len(paneles)} paneles actualizados')
 
     print('\nListo.')
 
@@ -361,6 +663,54 @@ def demo():
     assert all(f['estado'] not in ESTADOS_CERRADOS for f in abiertos)
     assert all(f['estado'] in ESTADOS_CERRADOS for f in cerrados)
     print('OK  ESTADOS_CERRADOS: los seguimientos abiertos no se tiran')
+
+    # --- el panel -----------------------------------------------------------
+    por_clave = {'aaa': {'nicho': 'Peluquerías'}, 'bbb': {'nicho': 'Peluquerías'},
+                 'ccc': {'nicho': 'Spas'}}
+    filas_v = [{'clave': 'aaa', 'ciudad': 'Rosario'}, {'clave': 'bbb', 'ciudad': 'Rosario'},
+               {'clave': 'ccc', 'ciudad': 'Córdoba'}]
+    assert nicho_y_ciudad(filas_v, por_clave) == ('Peluquerías', 'Rosario')
+    assert nicho_y_ciudad([], por_clave) == ('', ''), 'el vendedor nuevo no tiene nicho'
+    print('OK  nicho_y_ciudad: sale de los propios leads, sin guardar estado')
+
+    # Pidio otro nicho a mitad de lote y no le toca: se le dice que se le
+    # guarda, y el desplegable NO se le pisa.
+    bloqueado = mensaje_nicho('Spas', 'Peluquerías', False, 'ya llamaste a 12', False)
+    assert 'Spas' in bloqueado and 'sigue siendo Peluquerías' in bloqueado, bloqueado
+    # Se lo permitieron pero el nicho no tenia negocios libres.
+    vacio = mensaje_nicho('Spas', 'Peluquerías', True, '', False)
+    assert 'No quedan negocios de Spas' in vacio, vacio
+    # Le dieron lo que pidio.
+    assert 'Podes cambiar' in mensaje_nicho('Spas', 'Spas', True, '', False)
+    assert 'Podes cambiar' in mensaje_nicho('', 'Spas', True, '', False)
+    print('OK  mensaje_nicho: distingue negado, agotado y concedido')
+
+    assert 'faltan 18 por contactar' in mensaje_proximo(
+        {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18}, 20)
+    assert 'faltan 5 conversaciones' in mensaje_proximo(
+        {'asignados': 30, 'contactados': 30, 'hablados': 15, 'sin_contactar': 0}, 20)
+    assert 'lote nuevo' in mensaje_proximo(
+        {'asignados': 30, 'contactados': 30, 'hablados': 20, 'sin_contactar': 0}, 20)
+    assert 'Todavia no tenes leads' in mensaje_proximo(
+        {'asignados': 0, 'contactados': 0, 'hablados': 0, 'sin_contactar': 0}, 20)
+    # Al de 7 leads se le pide 5, no 20: la vara del panel es la misma que la
+    # que despues decide si repone.
+    assert 'hablado con 5' in mensaje_proximo(
+        {'asignados': 7, 'contactados': 6, 'hablados': 4, 'sin_contactar': 1}, 5)
+    print('OK  mensaje_proximo: dice exactamente que le falta')
+
+    p = filas_panel('Marto', 'Peluquerías', 'Rosario',
+                    {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18},
+                    'aviso', 'proximo')
+    assert len(p) == ALTO_PANEL and all(len(f) == 2 for f in p)
+    assert p[0][0] == 'Panel de Marto', 'el nombre va arriba de todo'
+    assert p[FILA_NICHO - 1] == ['Nicho', 'Peluquerías'], 'el desplegable esta en B5'
+    assert [f[0] for f in p if f[0] in ('MI NICHO', 'MI LOTE', 'PROXIMO LOTE')] == \
+           ['MI NICHO', 'MI LOTE', 'PROXIMO LOTE']
+    for fila in TITULOS[1:] + MENSAJES:
+        assert p[fila - 1][1] == '', f'la fila {fila} se combina, la B tiene que ir vacia'
+    print('OK  filas_panel: 16 filas, el nicho en B5 y las combinadas sin B')
+
 
 
 if __name__ == '__main__':

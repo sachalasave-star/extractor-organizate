@@ -17,6 +17,10 @@
  * Asignar leads, reponer y sincronizar lo sigue haciendo Python, que se puede
  * testear y ya corre solo dos veces por dia.
  *
+ * La hoja "Mi panel" del archivo NO la crea este script: la agrega Python en la
+ * primera corrida (sumar una hoja a un archivo que ya existe no consume cuota
+ * de Drive, crear el archivo si). Aca solo se crea "Mis clientes".
+ *
  * QUE ESCRIBE EN Config (las columnas A, C y E no se tocan):
  *   A  Vendedor           (ya existia)
  *   G  Email

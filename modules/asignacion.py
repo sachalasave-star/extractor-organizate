@@ -11,6 +11,7 @@ from modules.telefono import canonico
 
 LOTE = 30              # cuantos leads tiene un vendedor a la vez
 MINIMO_HABLADOS = 20   # de esos, con cuantos tiene que haber hablado para reponer
+MAXIMO_PARA_CAMBIAR = 10   # hasta cuantas llamadas se puede cambiar de nicho
 
 SIN_CONTACTAR = 'Sin contactar'
 
@@ -60,6 +61,18 @@ def resumen_lote(filas):
             'hablados': hablados, 'sin_contactar': len(filas) - contactados}
 
 
+def minimo_para(filas, lote=LOTE, minimo_hablados=MINIMO_HABLADOS):
+    """Cuantas conversaciones se le piden a un lote de este tamaño.
+
+    Con el lote completo son 20 de 30. Un lote mas chico pide la misma
+    proporcion: a los que arrastran leads del sistema viejo (Fran Majul tiene 7)
+    pedirles 20 conversaciones es pedirles algo imposible, y nunca les entraria
+    un lote nuevo. Nunca por encima de `minimo_hablados`, asi que tener leads de
+    mas (Gige tiene 37) tampoco sube la vara.
+    """
+    return min(minimo_hablados, -(-len(filas) * minimo_hablados // lote))
+
+
 def puede_reponer(filas, lote=LOTE, minimo_hablados=MINIMO_HABLADOS):
     """(bool, motivo) -> si corresponde darle un lote nuevo, y por que no.
 
@@ -73,12 +86,32 @@ def puede_reponer(filas, lote=LOTE, minimo_hablados=MINIMO_HABLADOS):
     r = resumen_lote(filas)
     if not filas:
         return True, 'no tiene leads asignados'
+    minimo = minimo_para(filas, lote, minimo_hablados)
     if r['sin_contactar']:
         return False, f"le quedan {r['sin_contactar']} sin contactar"
-    if r['hablados'] < minimo_hablados:
+    if r['hablados'] < minimo:
         return False, (f"contacto los {r['contactados']} pero hablo con "
-                       f"{r['hablados']}, necesita {minimo_hablados}")
+                       f"{r['hablados']}, necesita {minimo}")
     return True, f"contacto {r['contactados']} y hablo con {r['hablados']}"
+
+
+def puede_cambiar_nicho(filas, maximo=MAXIMO_PARA_CAMBIAR):
+    """(bool, motivo) -> si el vendedor todavia esta a tiempo de cambiar de nicho.
+
+    El lote se elige por (nicho, ciudad) para que las 30 llamadas se hagan con
+    el mismo discurso. Cambiar de nicho recien empezado sale gratis: se sueltan
+    los que no llamo y listo. Cambiar a mitad de camino no, porque los que ya
+    contacto se quedan y el lote termina siendo una ensalada de dos rubros, que
+    es justo lo que agrupar por nicho venia a evitar.
+
+    Ojo: esto vale a MITAD de lote. Cuando el lote se termina y se repone, el
+    cambio siempre se puede, porque el lote nuevo arranca de cero igual.
+    """
+    r = resumen_lote(filas)
+    if r['contactados'] < maximo:
+        return True, f"llevas {r['contactados']} de {maximo} llamadas"
+    return False, (f"ya llamaste a {r['contactados']}, "
+                   f"se desbloquea cuando termines el lote")
 
 
 def _clave(lead):
@@ -180,6 +213,24 @@ def demo():
     assert ok, por_que
     assert puede_reponer([])[0], 'el vendedor nuevo tiene que recibir su primer lote'
     print('OK  puede_reponer: exige contactar todos Y hablar con 20, juntas')
+
+    # Lote incompleto: la vara baja en proporcion, si no nunca repone.
+    assert minimo_para([0] * 30) == 20 and minimo_para([0] * 37) == 20
+    assert minimo_para([0] * 7) == 5 and minimo_para([0] * 1) == 1
+    chico = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 5 +
+             [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 2)
+    assert puede_reponer(chico)[0], 'con 7 leads no se pueden pedir 20 charlas'
+    assert not puede_reponer(chico[1:] + [chico[-1]])[0], '4 charlas de 7 no alcanzan'
+    print('OK  minimo_para: el lote chico pide la misma proporcion, no 20 fijo')
+
+    # --- cambio de nicho ----------------------------------------------------
+    assert puede_cambiar_nicho([])[0], 'el que todavia no empezo puede elegir'
+    nueve = [{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 9 +             [{'estado': 'Sin contactar', 'motivo': ''}] * 21
+    assert puede_cambiar_nicho(nueve)[0], 'con 9 llamadas todavia se puede'
+    diez = [{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 10 +            [{'estado': 'Sin contactar', 'motivo': ''}] * 20
+    ok, por_que = puede_cambiar_nicho(diez)
+    assert not ok and 'ya llamaste a 10' in por_que, por_que
+    print('OK  puede_cambiar_nicho: se traba a las 10 llamadas, no a las 11')
 
     # --- eleccion del lote --------------------------------------------------
     disponibles = (
