@@ -56,6 +56,7 @@ function onOpen() {
     .createMenu('Ventas')
     .addItem('Agregar vendedor', 'agregarVendedor')
     .addItem('Reparar accesos de todos', 'repararAccesos')
+    .addItem('Mandar el link por mail a todos', 'mandarLinks')
     .addSeparator()
     .addItem('Ver estado del sistema', 'estadoDelSistema')
     .addToUi();
@@ -187,6 +188,61 @@ function _columnaNoVacia(hoja, col) {
 }
 
 
+/**
+ * Le manda al vendedor el link de su archivo.
+ *
+ * DriveApp.addEditor() da el permiso pero NO avisa: el archivo le aparece en
+ * "Compartido conmigo" y listo, y si nadie le dijo que vaya a buscarlo ahi, no
+ * lo encuentra nunca. Paso con los primeros 10. El mail sale de la cuenta del
+ * dueño de la planilla, porque Apps Script corre con esa cuenta, asi que al
+ * vendedor le llega de una direccion que conoce y no de un robot.
+ */
+function _avisar(nombre, email, url) {
+  MailApp.sendEmail({
+    to: email,
+    subject: 'Tu archivo de ventas — Organizate',
+    htmlBody:
+      '<p>Hola ' + nombre + ', este es tu archivo de ventas. Es solo tuyo:</p>' +
+      '<p><a href="' + url + '">' + url + '</a></p>' +
+      '<p>Entra con este mismo mail. Se abre en <b>Mi panel</b>: ahi ves que rubro te ' +
+      'toco, cuantos negocios tenes y cuanto te falta para que te entren nuevos. ' +
+      'En <b>Mis clientes</b> estan los negocios para llamar.</p>' +
+      '<p>Dos cosas que conviene saber:</p>' +
+      '<ul>' +
+      '<li>Carga siempre el <b>Motivo</b> cuando hablas con alguien. El motivo vacio ' +
+      'no cuenta como conversacion, y sin eso no te entran negocios nuevos.</li>' +
+      '<li>Podes cambiar de rubro desde el panel, hasta la llamada 10 o cada vez que ' +
+      'te entra una tanda nueva.</li>' +
+      '</ul>' +
+      '<p>Se actualiza solo dos veces por dia. Guardalo en favoritos.</p>'
+  });
+}
+
+
+/** Reenvia el link a todos los que ya tienen archivo. */
+function mandarLinks() {
+  var ui = SpreadsheetApp.getUi();
+  var vendedores = _vendedores().filter(function (v) { return v.email && v.url; });
+  if (!vendedores.length) return ui.alert('Todavia no hay ningun archivo creado.');
+
+  var nombres = vendedores.map(function (v) { return v.nombre; }).join(', ');
+  if (ui.alert('Mandar el link por mail a ' + vendedores.length + ' vendedores?\n\n' +
+               nombres, ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+
+  var ok = [], fallados = [];
+  for (var i = 0; i < vendedores.length; i++) {
+    try {
+      _avisar(vendedores[i].nombre, vendedores[i].email, vendedores[i].url);
+      ok.push(vendedores[i].nombre);
+    } catch (e) {
+      fallados.push(vendedores[i].nombre + ' (' + e.message + ')');
+    }
+  }
+  ui.alert('Mail enviado a: ' + (ok.join(', ') || 'ninguno') +
+           (fallados.length ? '\n\nCON PROBLEMAS: ' + fallados.join(', ') : ''));
+}
+
+
 /** Alta completa de un vendedor, desde el menu. */
 function agregarVendedor() {
   var ui = SpreadsheetApp.getUi();
@@ -270,6 +326,10 @@ function repararAccesos() {
           var libro = _crearArchivo(v.nombre, v.email);
           hoja.getRange(v.fila, COL_EMAIL, 1, 4).setValues(
             [[v.email, libro.getId(), libro.getUrl(), 'ACTIVO']]);
+          // Solo a los recien creados: reenviarle el link a todos en cada
+          // reparacion seria spamear al equipo entero. Para eso esta
+          // "Mandar el link por mail a todos".
+          _avisar(v.nombre, v.email, libro.getUrl());
           creados.push(v.nombre);
         } else {
           var archivo = DriveApp.getFileById(v.id);
