@@ -473,6 +473,20 @@ def nicho_y_ciudad(filas, por_clave):
     return nicho, _mas_comun([f.get('ciudad') for f in filas])
 
 
+def _ciudad_filtrada(filas):
+    """La ciudad si el lote esta filtrado a una sola, si no ''.
+
+    A diferencia de `nicho_y_ciudad` (que promedia y sirve para mostrar), esto
+    necesita saber si HAY un filtro de ciudad en efecto: un lote con negocios
+    de varias ciudades es un lote sin filtrar, aunque una tenga mas que las
+    otras. Sin esto, pedir volver a Toda Argentina nunca se distingue de
+    seguir en la ciudad de siempre, porque las dos leen como "la ciudad que
+    ya tiene" y el cambio jamas se dispara.
+    """
+    ciudades = {f.get('ciudad', '').strip() for f in filas if f.get('ciudad', '').strip()}
+    return ciudades.pop() if len(ciudades) == 1 else ''
+
+
 def _hoja_calificados(libro, crear=True):
     """(hoja, recien_creada) de la carpeta de interesados.
 
@@ -694,7 +708,7 @@ def main(simular=False):
         actual = nicho_y_ciudad(filas, por_clave)
         pedido = leer_filtro(hoja_panel) if hoja_panel and not panel_nuevo else ('', '')
         cambiar = ((pedido[0] and pedido[0] != actual[0]) or
-                   (pedido[1] and pedido[1] != actual[1]))
+                   (pedido[1] != _ciudad_filtrada(filas)))
         libre, motivo_cambio = puede_cambiar_nicho(filas)
 
         # 3. Le toca lote nuevo?
@@ -857,6 +871,13 @@ def demo():
     assert nicho_y_ciudad(filas_v, por_clave) == ('Peluquerías', 'Rosario')
     assert nicho_y_ciudad([], por_clave) == ('', ''), 'el vendedor nuevo no tiene nicho'
     print('OK  nicho_y_ciudad: sale de los propios leads, sin guardar estado')
+
+    # Mixto no es lo mismo que filtrado: si hay mas de una ciudad, no hay
+    # filtro en efecto aunque una sea mayoria (nicho_y_ciudad si promedia).
+    assert _ciudad_filtrada(filas_v) == '', 'Rosario y Córdoba mezclados: sin filtro'
+    assert _ciudad_filtrada([{'ciudad': 'Rosario'}, {'ciudad': 'Rosario'}]) == 'Rosario'
+    assert _ciudad_filtrada([]) == ''
+    print('OK  _ciudad_filtrada: distingue "filtrado a una ciudad" de "mayoria mezclada"')
 
     assert _frase(('Peluquerías', 'Rosario')) == 'Peluquerías en Rosario'
     assert _frase(('Peluquerías', '')) == 'Peluquerías'
