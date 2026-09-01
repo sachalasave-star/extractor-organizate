@@ -234,7 +234,10 @@ def _fila_conservada(f):
 # La fila 5 (Nicho) es lo unico que se deja editable.
 # --------------------------------------------------------------------------
 
-FILA_NICHO = 5                # B5: el desplegable
+FILA_NICHO = 5                # B5: desplegable de rubro
+FILA_CIUDAD = 6               # B6: desplegable de ciudad, opcional
+TODA_ARGENTINA = 'Toda Argentina'   # en B6 significa "no me filtres por ciudad"
+CIUDADES_OFRECIDAS = 20       # las que mas negocios libres tienen
 ALTO_PANEL = 16               # filas que ocupa
 TITULOS = (1, 4, 9, 15)       # filas que son encabezado de seccion
 MENSAJES = (2, 7, 16)         # filas de texto largo, van con wrap
@@ -252,27 +255,42 @@ def _hoja_panel(libro, crear=True):
     return hoja, True
 
 
-def leer_nicho_elegido(hoja):
-    """Lo que el vendedor dejo en el desplegable de nicho."""
-    return (reintentar(hoja.acell, f'B{FILA_NICHO}').value or '').strip()
+def leer_filtro(hoja):
+    """(rubro, ciudad) que el vendedor dejo elegidos. Ciudad vacia = toda Argentina."""
+    b5, b6 = reintentar(hoja.batch_get, [f'B{FILA_NICHO}', f'B{FILA_CIUDAD}'])
+    saca = lambda r: (r[0][0] if r and r[0] else '').strip()
+    ciudad = saca(b6)
+    return saca(b5), ('' if ciudad == TODA_ARGENTINA else ciudad)
 
 
-def mensaje_nicho(elegido, actual, puede, motivo, repone):
-    """Que decirle sobre el cambio de nicho, en castellano.
+def _frase(filtro):
+    """(nicho, ciudad) -> 'Peluquerias en Rosario' / 'Peluquerias' / 'negocios en Rosario'."""
+    nicho, ciudad = filtro
+    if nicho and ciudad:
+        return f'{nicho} en {ciudad}'
+    return nicho or (f'negocios en {ciudad}' if ciudad else 'nada')
 
-    `actual` es el nicho que EFECTIVAMENTE quedo en su lote despues de repartir,
-    asi que si pidio uno y quedo otro, o se le nego el cambio o el nicho que
-    pidio se quedo sin negocios. Las dos cosas hay que decirselas distinto.
+
+def mensaje_filtro(pedido, logrado, puede, motivo, repone):
+    """Que decirle sobre el rubro y la ciudad, en castellano.
+
+    `logrado` es lo que EFECTIVAMENTE quedo en su lote despues de repartir. Si
+    pidio una cosa y quedo otra hay dos razones posibles y se dicen distinto: o
+    se le nego el cambio por estar a mitad de tanda, o lo que pidio se quedo sin
+    negocios libres.
     """
-    if not elegido or elegido == actual:
-        return ('Podes cambiar de rubro hasta la llamada 10, y otra vez cada vez que te '
-                'entra una tanda nueva. Elegi del desplegable: los negocios se cambian '
-                'dentro de la hora, no al instante.')
+    ln, lc = logrado
+    ahora = ('Ahora estas llamando ' + (f'{ln} en {lc}.' if ln and lc else f'{ln or "nada"}.'))
+    pn, pc = pedido
+    if (not pn or pn == ln) and (not pc or pc == lc):
+        return (ahora + ' Podes cambiar el rubro y la ciudad hasta la llamada 10, y otra '
+                'vez cada vez que te entra una tanda nueva. Tarda hasta una hora en '
+                'aplicarse, no es al instante.')
     if puede or repone:
-        return (f'No quedan negocios de {elegido} sin repartir, asi que seguis en '
-                f'{actual}. Proba con otro rubro.')
-    return (f'Pediste {elegido} pero {motivo}. Tu lote sigue siendo {actual}: '
-            f'cuando lo termines te lo cambiamos.')
+        return (ahora + f' No quedan negocios de {_frase(pedido)} sin repartir. Proba con '
+                'otro rubro, o con toda Argentina.')
+    return (ahora + f' Pediste {_frase(pedido)} pero {motivo}: cuando termines la tanda '
+            'te lo cambiamos.')
 
 
 def mensaje_proximo(res, minimo):
@@ -290,29 +308,35 @@ def mensaje_proximo(res, minimo):
     return 'Listo: en la proxima actualizacion te entra un lote nuevo.'
 
 
-def filas_panel(nombre, nicho, ciudad, res, aviso_nicho, aviso_proximo):
-    """Las 16 filas del panel. Logica pura: se testea sin tocar Google."""
+def filas_panel(nombre, pedido, res, aviso_filtro, aviso_proximo):
+    """Las 16 filas del panel. Logica pura: se testea sin tocar Google.
+
+    Las filas 5 y 6 son lo que el vendedor PIDIO, no lo que le toco: son sus dos
+    controles y no se le pisan. Lo que efectivamente esta llamando se lo dice el
+    mensaje de la fila 7, que si no la ciudad quedaria fijada sin que la haya
+    elegido nunca.
+    """
     return [
         [f'Panel de {nombre}', ''],
-        ['Se actualiza solo cada hora. Vos solo tocas el rubro.', ''],
+        ['Se actualiza solo cada hora. Vos elegis el rubro y la ciudad.', ''],
         ['', ''],
-        ['MI NICHO', ''],
-        ['Nicho', nicho or '(sin asignar)'],
-        ['Ciudad', ciudad or '-'],
-        [aviso_nicho, ''],
+        ['LO QUE QUIERO LLAMAR', ''],
+        ['Rubro', pedido[0] or '(sin elegir)'],
+        ['Ciudad', pedido[1] or TODA_ARGENTINA],
+        [aviso_filtro, ''],
         ['', ''],
-        ['MI LOTE', ''],
+        ['MI TANDA', ''],
         ['Negocios asignados', res['asignados']],
         ['Ya contactados', res['contactados']],
         ['Con los que hablaste', res['hablados']],
         ['Sin contactar', res['sin_contactar']],
         ['', ''],
-        ['PROXIMO LOTE', ''],
+        ['PROXIMA TANDA', ''],
         [aviso_proximo, ''],
     ]
 
 
-def _formato_panel(libro, hoja, nichos):
+def _formato_panel(libro, hoja):
     """El maquillaje, una sola vez cuando se crea la hoja."""
     sid = hoja.id
     oscuro, claro = (rgb(hex_a_rgb(c)) for c in DINERO)
@@ -383,28 +407,22 @@ def _formato_panel(libro, hoja, nichos):
                                 'textFormat': {'bold': True, 'fontSize': 13}},
                        'userEnteredFormat(horizontalAlignment,textFormat)', 1, 2))
 
-    # El desplegable de nicho: lo unico editable, con marco para que se note.
+    # Las dos celdas editables, resaltadas para que se note cuales son.
     reqs += [
-        {'setDataValidation': {
-            'range': rango(FILA_NICHO, FILA_NICHO, 1, 2),
-            'rule': {'condition': {'type': 'ONE_OF_LIST',
-                                   'values': [{'userEnteredValue': n} for n in nichos]},
-                     'showCustomUi': True, 'strict': False,
-                     'inputMessage': 'Elegi el rubro que queres trabajar'}}},
-        celdas(FILA_NICHO, FILA_NICHO,
+        celdas(FILA_NICHO, FILA_CIUDAD,
                {'backgroundColor': rgb(hex_a_rgb('#FFF8E1')),
                 'textFormat': {'bold': True, 'fontSize': 11}},
                'userEnteredFormat(backgroundColor,textFormat)', 1, 2),
         {'updateBorders': dict(
-            {'range': rango(FILA_NICHO, FILA_NICHO, 1, 2)},
+            {'range': rango(FILA_NICHO, FILA_CIUDAD, 1, 2)},
             **{lado: {'style': 'SOLID', 'color': oscuro}
                for lado in ('top', 'bottom', 'left', 'right')})},
     ]
 
-    # Todo protegido menos la fila del nicho, en modo aviso: el archivo es del
-    # vendedor, no hace falta trabarlo. Alcanza con que Sheets le avise antes
+    # Todo protegido menos las dos celdas que elige, en modo aviso: el archivo es
+    # del vendedor, no hace falta trabarlo. Alcanza con que Sheets le avise antes
     # de pisar algo que igual se reescribe en la proxima corrida.
-    for f1, f2 in ((1, FILA_NICHO - 1), (FILA_NICHO + 1, ALTO_PANEL)):
+    for f1, f2 in ((1, FILA_NICHO - 1), (FILA_CIUDAD + 1, ALTO_PANEL)):
         reqs.append({'addProtectedRange': {'protectedRange': {
             'range': rango(f1, f2), 'warningOnly': True,
             'description': 'Lo escribe el sistema'}}})
@@ -413,6 +431,27 @@ def _formato_panel(libro, hoja, nichos):
         'properties': {'sheetId': sid, 'tabColor': oscuro}, 'fields': 'tabColor'}})
 
     reintentar(libro.batch_update, {'requests': reqs})
+
+
+def _desplegables(libro, hoja, nichos, ciudades):
+    """Refresca las dos listas del panel.
+
+    Va en cada corrida y no solo al crear la hoja: los rubros y las ciudades que
+    todavia tienen negocios libres cambian a medida que el equipo los consume, y
+    ofrecerle uno vacio seria ofrecerle quedarse sin tanda.
+    """
+    def regla(fila, valores, ayuda):
+        return {'setDataValidation': {
+            'range': {'sheetId': hoja.id, 'startRowIndex': fila - 1, 'endRowIndex': fila,
+                      'startColumnIndex': 1, 'endColumnIndex': 2},
+            'rule': {'condition': {'type': 'ONE_OF_LIST',
+                                   'values': [{'userEnteredValue': v} for v in valores]},
+                     'showCustomUi': True, 'strict': False, 'inputMessage': ayuda}}}
+
+    reintentar(libro.batch_update, {'requests': [
+        regla(FILA_NICHO, nichos, 'El rubro que queres trabajar'),
+        regla(FILA_CIUDAD, [TODA_ARGENTINA] + ciudades,
+              'Una sola ciudad si queres ir a los locales, o toda Argentina')]})
 
 
 def _mas_comun(valores):
@@ -473,9 +512,14 @@ def main(simular=False):
                    if not master.get(_clave(l), {}).get('vendedor')]
     tomados = {k for k, m in master.items() if m['vendedor']}
 
-    # El desplegable ofrece solo nichos que todavia tienen leads sin repartir:
-    # elegir uno vacio seria elegir quedarse sin lote.
+    # Los desplegables ofrecen solo lo que todavia tiene negocios sin repartir:
+    # elegir algo vacio seria elegir quedarse sin tanda. Las ciudades ademas van
+    # por cantidad y cortadas: son 36 y la cola larga son partidos del conurbano
+    # con dos negocios, que no le sirven a nadie.
     nichos = sorted({l['nicho'] for l in disponibles if l.get('nicho')})
+    ciudades = [c for c, _ in Counter(
+        l['ciudad'].strip() for l in disponibles if l.get('ciudad', '').strip()
+    ).most_common(CIUDADES_OFRECIDAS)]
 
     escrituras_master, nuevas_asignaciones, paneles = [], [], []
 
@@ -491,7 +535,7 @@ def main(simular=False):
 
         if panel_nuevo:
             try:
-                _formato_panel(libro_v, hoja_panel, nichos)
+                _formato_panel(libro_v, hoja_panel)
             except Exception:
                 # Sin formato la hoja queda inservible, y ninguna corrida la
                 # volveria a formatear porque ya existe. Se borra y se reintenta
@@ -499,16 +543,33 @@ def main(simular=False):
                 reintentar(libro_v.del_worksheet, hoja_panel)
                 raise
             print(f"   {v['nombre']}: panel creado")
+        if hoja_panel:
+            _desplegables(libro_v, hoja_panel, nichos, ciudades)
 
-        def tomar(nicho, faltan):
-            """Saca `faltan` leads del pozo y se los anota en el master."""
+        def tomar(nicho, ciudad, faltan):
+            """Saca `faltan` leads del pozo y se los anota en el master.
+
+            Si lo pedido se quedo sin negocios se va aflojando: primero se suelta
+            el rubro y no la ciudad, porque el que eligio ciudad lo hizo para ir
+            a los locales y no le sirve el mismo rubro a 500 km.
+            """
             nonlocal disponibles
             if faltan <= 0:
                 return []
-            pozo = [l for l in disponibles if l.get('nicho') == nicho] if nicho else disponibles
-            elegidos = elegir_lote(pozo, faltan, tomados)
-            if not elegidos and nicho:      # el nicho pedido se quedo sin leads
-                elegidos = elegir_lote(disponibles, faltan, tomados)
+            intentos = [(nicho, ciudad)]
+            if ciudad:
+                intentos.append(('', ciudad))
+            if nicho:
+                intentos.append((nicho, ''))
+            intentos.append(('', ''))
+            elegidos = []
+            for n, c in intentos:
+                pozo = [l for l in disponibles
+                        if (not n or l.get('nicho') == n)
+                        and (not c or l.get('ciudad', '').strip() == c)]
+                elegidos = elegir_lote(pozo, faltan, tomados)
+                if elegidos:
+                    break
             for lead in elegidos:
                 clave = _clave(lead)
                 tomados.add(clave)
@@ -541,10 +602,11 @@ def main(simular=False):
             m.update(estado=f['estado'], motivo=f['motivo'],
                      observaciones=f['observaciones'])
 
-        # 2. Que nicho esta trabajando y cual pidio.
-        nicho_actual, ciudad = nicho_y_ciudad(filas, por_clave)
-        elegido = leer_nicho_elegido(hoja_panel) if hoja_panel and not panel_nuevo else ''
-        cambiar = bool(elegido) and elegido != nicho_actual
+        # 2. Que esta trabajando y que pidio.
+        actual = nicho_y_ciudad(filas, por_clave)
+        pedido = leer_filtro(hoja_panel) if hoja_panel and not panel_nuevo else ('', '')
+        cambiar = ((pedido[0] and pedido[0] != actual[0]) or
+                   (pedido[1] and pedido[1] != actual[1]))
         libre, motivo_cambio = puede_cambiar_nicho(filas)
 
         # 3. Le toca lote nuevo?
@@ -555,15 +617,17 @@ def main(simular=False):
               f"{'REPONE' if repone else 'sigue'} ({por_que})")
 
         siguen, lote, sueltos = filas, [], []
-        nicho = elegido if (cambiar and (repone or libre)) else nicho_actual
+        # El rubro pedido manda; si nunca eligio, sigue con el que tiene. La
+        # ciudad solo filtra si la eligio a proposito: vacia es toda Argentina.
+        nicho, ciudad = pedido[0] or actual[0], pedido[1]
 
         if repone:
             # Lote nuevo: los cerrados salen, los seguimientos se quedan. El
             # cambio de nicho aca siempre vale: el lote arranca de cero igual.
             siguen = [f for f in filas if f['estado'] not in ESTADOS_CERRADOS]
-            lote = tomar(nicho, LOTE - len(siguen))
+            lote = tomar(nicho, ciudad, LOTE - len(siguen))
             if cambiar:
-                print(f'      cambia de nicho: {nicho_actual or "-"} -> {nicho}')
+                print(f'      cambia: {_frase(actual)} -> {_frase(pedido)}')
             if not lote:
                 print(f'      {len(siguen)} seguimientos abiertos, no entra ninguno nuevo'
                       if len(siguen) >= LOTE else '      no quedan leads para repartir')
@@ -582,11 +646,11 @@ def main(simular=False):
                         'range': f"'{m['hoja']}'!{col_letra(IDX['Vendedor'])}{m['fila']}",
                         'values': [['']]})
                     m['vendedor'] = ''
-            lote = tomar(nicho, LOTE - len(siguen))
-            print(f'      cambia de nicho: {nicho_actual or "-"} -> {nicho} '
+            lote = tomar(nicho, ciudad, LOTE - len(siguen))
+            print(f'      cambia: {_frase(actual)} -> {_frase(pedido)} '
                   f'({len(sueltos)} devueltos, {len(lote)} nuevos)')
         elif cambiar:
-            print(f'      pidio {elegido} pero {motivo_cambio}')
+            print(f'      pidio {_frase(pedido)} pero {motivo_cambio}')
 
         # Se rearma el archivo si cambio algo de lo que el vendedor ve. Los
         # rescatados cuentan: si no, quedan asignados a su nombre en el master
@@ -598,11 +662,11 @@ def main(simular=False):
         if hoja_panel:
             final = siguen + [{'estado': SIN_CONTACTAR, 'motivo': ''} for _ in lote]
             res = resumen_lote(final)
-            nicho_final = (lote[0].get('nicho') if lote else nicho) or nicho_actual
-            ciudad_final = lote[0].get('ciudad') if lote else ciudad
+            logrado = ((lote[0].get('nicho'), lote[0].get('ciudad', '').strip())
+                       if lote else actual)
             paneles.append((v, hoja_panel, filas_panel(
-                v['nombre'], elegido or nicho_final, ciudad_final, res,
-                mensaje_nicho(elegido, nicho_final, libre, motivo_cambio, repone),
+                v['nombre'], (pedido[0] or logrado[0], pedido[1]), res,
+                mensaje_filtro(pedido, logrado, libre, motivo_cambio, repone),
                 mensaje_proximo(res, minimo_para(final)))))
 
     if simular:
@@ -674,17 +738,23 @@ def demo():
     assert nicho_y_ciudad([], por_clave) == ('', ''), 'el vendedor nuevo no tiene nicho'
     print('OK  nicho_y_ciudad: sale de los propios leads, sin guardar estado')
 
-    # Pidio otro nicho a mitad de lote y no le toca: se le dice que se le
-    # guarda, y el desplegable NO se le pisa.
-    bloqueado = mensaje_nicho('Spas', 'Peluquerías', False, 'ya llamaste a 12', False)
-    assert 'Spas' in bloqueado and 'sigue siendo Peluquerías' in bloqueado, bloqueado
-    # Se lo permitieron pero el nicho no tenia negocios libres.
-    vacio = mensaje_nicho('Spas', 'Peluquerías', True, '', False)
-    assert 'No quedan negocios de Spas' in vacio, vacio
-    # Le dieron lo que pidio.
-    assert 'Podes cambiar' in mensaje_nicho('Spas', 'Spas', True, '', False)
-    assert 'Podes cambiar' in mensaje_nicho('', 'Spas', True, '', False)
-    print('OK  mensaje_nicho: distingue negado, agotado y concedido')
+    assert _frase(('Peluquerías', 'Rosario')) == 'Peluquerías en Rosario'
+    assert _frase(('Peluquerías', '')) == 'Peluquerías'
+    assert _frase(('', 'Rosario')) == 'negocios en Rosario'
+
+    # Le dieron lo que pidio: rubro y ciudad.
+    ok = mensaje_filtro(('Spas', 'Rosario'), ('Spas', 'Rosario'), True, '', False)
+    assert 'Ahora estas llamando Spas en Rosario.' in ok and 'Podes cambiar' in ok, ok
+    # Nunca eligio ciudad: que le haya tocado Córdoba no es un pedido incumplido.
+    assert 'Podes cambiar' in mensaje_filtro(('Spas', ''), ('Spas', 'Córdoba'), True, '', False)
+    # Pidio a mitad de tanda y no le toca: se le guarda.
+    bloq = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Córdoba'), False,
+                          'ya llamaste a 12', False)
+    assert 'Pediste Spas en Rosario' in bloq and 'cuando termines la tanda' in bloq, bloq
+    # Se lo permitieron pero no quedaban negocios de eso.
+    vacio = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Rosario'), True, '', False)
+    assert 'No quedan negocios de Spas en Rosario' in vacio, vacio
+    print('OK  mensaje_filtro: distingue cumplido, negado y agotado, con ciudad')
 
     assert 'faltan 18 por contactar' in mensaje_proximo(
         {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18}, 20)
@@ -700,18 +770,19 @@ def demo():
         {'asignados': 7, 'contactados': 6, 'hablados': 4, 'sin_contactar': 1}, 5)
     print('OK  mensaje_proximo: dice exactamente que le falta')
 
-    p = filas_panel('Marto', 'Peluquerías', 'Rosario',
-                    {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18},
-                    'aviso', 'proximo')
+    res = {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18}
+    p = filas_panel('Marto', ('Peluquerías', 'Rosario'), res, 'aviso', 'proximo')
     assert len(p) == ALTO_PANEL and all(len(f) == 2 for f in p)
     assert p[0][0] == 'Panel de Marto', 'el nombre va arriba de todo'
-    assert p[FILA_NICHO - 1] == ['Nicho', 'Peluquerías'], 'el desplegable esta en B5'
-    assert [f[0] for f in p if f[0] in ('MI NICHO', 'MI LOTE', 'PROXIMO LOTE')] == \
-           ['MI NICHO', 'MI LOTE', 'PROXIMO LOTE']
+    assert p[FILA_NICHO - 1] == ['Rubro', 'Peluquerías']
+    assert p[FILA_CIUDAD - 1] == ['Ciudad', 'Rosario']
+    # Sin ciudad elegida la celda dice "Toda Argentina", no la ciudad que le
+    # toco: si no, quedaria filtrado por una ciudad que nunca pidio.
+    sin = filas_panel('Marto', ('Peluquerías', ''), res, 'aviso', 'proximo')
+    assert sin[FILA_CIUDAD - 1] == ['Ciudad', TODA_ARGENTINA], sin[FILA_CIUDAD - 1]
     for fila in TITULOS[1:] + MENSAJES:
         assert p[fila - 1][1] == '', f'la fila {fila} se combina, la B tiene que ir vacia'
-    print('OK  filas_panel: 16 filas, el nicho en B5 y las combinadas sin B')
-
+    print('OK  filas_panel: rubro en B5, ciudad en B6 y las combinadas sin B')
 
 
 if __name__ == '__main__':
