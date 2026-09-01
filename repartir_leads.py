@@ -33,13 +33,14 @@ import pandas as pd
 
 from collections import Counter
 
-from modules.asignacion import (LOTE, contactado, elegir_lote, minimo_para,
-                                puede_cambiar_nicho, puede_reponer, resumen_lote,
-                                _clave)
+from modules.asignacion import (CALIFICADOS, LOTE, contactado, elegir_lote,
+                                minimo_para, puede_cambiar_nicho, puede_reponer,
+                                resumen_lote, _clave)
 from modules.estilo import (BLANCO, DINERO, FUENTE, TINTA, TINTA_SUAVE,
                             hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, COLUMNAS, CONFIG, FILA_VENDEDORES, IDX,
-                              SIN_CONTACTAR, col_letra, reintentar)
+                              MOTIVOS, NOMBRES_ESTADO, SIN_CONTACTAR, col_letra,
+                              reintentar)
 from modules.telefono import canonico
 from sincronizar_sheets import GENERADO, _abrir_libro, _cliente_gspread, _sheet_id
 
@@ -48,6 +49,7 @@ from sincronizar_sheets import GENERADO, _abrir_libro, _cliente_gspread, _sheet_
 # la de leads la crea el Apps Script con este nombre exacto.
 HOJA_VENDEDOR = 'Mis clientes'
 PANEL_VENDEDOR = '📊 Mi panel'
+HOJA_CALIFICADOS = '⭐ Interesados'
 
 # Columnas del archivo personal, en el orden que las crea el Apps Script.
 # Si se tocan alla, hay que tocarlas aca: es el unico acoplamiento entre los dos.
@@ -56,10 +58,10 @@ COLUMNAS_VENDEDOR = ['Negocio', 'Teléfono', 'Estado', 'Motivo', 'Observaciones'
                      'Prioridad']
 V = {c: i for i, c in enumerate(COLUMNAS_VENDEDOR)}
 
-# Un lead cerrado ya no tiene vuelta y sale del archivo del vendedor cuando le
-# toca lote nuevo. Lo demas (incluido "Volver a llamar") se queda: son los
-# seguimientos, y borrarlos seria tirar el trabajo hecho.
-ESTADOS_CERRADOS = {'No interesado', 'Cliente activo'}
+# Un lead cerrado ya no tiene vuelta y sale del archivo cuando entra una tanda
+# nueva. "Cliente activo" salia por aca antes: ahora va a la carpeta de
+# interesados, que es donde tiene que quedar guardado.
+ESTADOS_CERRADOS = {'No interesado'}
 
 # Columnas del master que se leen para saber que esta tomado y con que estado.
 # Va de Telefono a Ultima gestion en un solo rango.
@@ -308,7 +310,7 @@ def mensaje_proximo(res, minimo):
     return 'Listo: en la proxima actualizacion te entra un lote nuevo.'
 
 
-def filas_panel(nombre, pedido, res, aviso_filtro, aviso_proximo):
+def filas_panel(nombre, pedido, res, guardados, aviso_filtro, aviso_proximo):
     """Las 16 filas del panel. Logica pura: se testea sin tocar Google.
 
     Las filas 5 y 6 son lo que el vendedor PIDIO, no lo que le toco: son sus dos
@@ -318,7 +320,9 @@ def filas_panel(nombre, pedido, res, aviso_filtro, aviso_proximo):
     """
     return [
         [f'Panel de {nombre}', ''],
-        ['Se actualiza solo cada hora. Vos elegis el rubro y la ciudad.', ''],
+        ['Se actualiza solo cada hora. Vos elegis el rubro y la ciudad.' +
+         (f' Tenes {guardados} guardados en la pestaña {HOJA_CALIFICADOS}.'
+          if guardados else ''), ''],
         ['', ''],
         ['LO QUE QUIERO LLAMAR', ''],
         ['Rubro', pedido[0] or '(sin elegir)'],
@@ -469,6 +473,83 @@ def nicho_y_ciudad(filas, por_clave):
     return nicho, _mas_comun([f.get('ciudad') for f in filas])
 
 
+def _hoja_calificados(libro, crear=True):
+    """(hoja, recien_creada) de la carpeta de interesados.
+
+    Sin crear devuelve (None, False) si no existe. Igual que el panel, la crea
+    Python: agregar una hoja a un archivo que ya existe no consume cuota de
+    Drive, crear el archivo si.
+    """
+    for h in reintentar(libro.worksheets):
+        if h.title == HOJA_CALIFICADOS:
+            return h, False
+    if not crear:
+        return None, False
+    hoja = reintentar(libro.add_worksheet, title=HOJA_CALIFICADOS, rows=300,
+                      cols=len(COLUMNAS_VENDEDOR), index=2)
+    return hoja, True
+
+
+def _formato_calificados(libro, hoja):
+    """Encabezado, anchos y los mismos desplegables que la hoja de la tanda."""
+    sid = hoja.id
+    oscuro = rgb(hex_a_rgb(DINERO[0]))
+    reqs = [
+        {'updateSheetProperties': {
+            'properties': {'sheetId': sid, 'tabColor': oscuro,
+                           'gridProperties': {'frozenRowCount': 1}},
+            'fields': 'tabColor,gridProperties.frozenRowCount'}},
+        {'repeatCell': {
+            'range': {'sheetId': sid, 'startRowIndex': 0, 'endRowIndex': 1},
+            'cell': {'userEnteredFormat': {
+                'backgroundColor': oscuro,
+                'textFormat': {'bold': True, 'fontFamily': FUENTE,
+                               'foregroundColor': rgb(hex_a_rgb(BLANCO))}}},
+            'fields': 'userEnteredFormat(backgroundColor,textFormat)'}},
+    ]
+    for col, ancho in ((V['Negocio'], 260), (V['Teléfono'], 130), (V['Estado'], 140),
+                       (V['Motivo'], 170), (V['Observaciones'], 320)):
+        reqs.append({'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'COLUMNS',
+                      'startIndex': col, 'endIndex': col + 1},
+            'properties': {'pixelSize': ancho}, 'fields': 'pixelSize'}})
+    # El vendedor sigue trabajando estos negocios, asi que necesita las mismas
+    # listas para moverlos de "Le interesó" a "Demo iniciada" y a "Cliente activo".
+    for col, lista in ((V['Estado'], NOMBRES_ESTADO), (V['Motivo'], MOTIVOS)):
+        reqs.append({'setDataValidation': {
+            'range': {'sheetId': sid, 'startRowIndex': 1,
+                      'startColumnIndex': col, 'endColumnIndex': col + 1},
+            'rule': {'condition': {'type': 'ONE_OF_LIST',
+                                   'values': [{'userEnteredValue': x} for x in lista]},
+                     'showCustomUi': True, 'strict': False}}})
+    reintentar(libro.batch_update, {'requests': reqs})
+
+
+def repartir_por_hoja(filas, carpeta):
+    """Adonde va cada negocio cuando entra una tanda nueva.
+
+    Devuelve (siguen, nueva_carpeta). Logica pura, se testea sin tocar Google.
+
+      - Le interesó / Demo iniciada / Cliente activo -> a la carpeta. Son los
+        que valen y no se pueden perder entre 30 llamados en frio nuevos.
+      - No interesado -> afuera, de las dos hojas.
+      - el resto (Volver a llamar, y el que pidio que lo llamen despues) se
+        queda en la tanda: son seguimientos con fecha.
+
+    La carpeta se acumula entre tandas, asi que lo que ya estaba adentro entra
+    de nuevo salvo que el vendedor lo haya bajado a No interesado.
+    """
+    nueva, vistos = [], set()
+    for f in carpeta + [f for f in filas if f['estado'] in CALIFICADOS]:
+        if f['estado'] in ESTADOS_CERRADOS or f['clave'] in vistos:
+            continue
+        vistos.add(f['clave'])
+        nueva.append(f)
+    siguen = [f for f in filas
+              if f['estado'] not in CALIFICADOS and f['estado'] not in ESTADOS_CERRADOS]
+    return siguen, nueva
+
+
 def leads_del_excel(generado=GENERADO):
     """Todos los negocios del Excel, en el formato que espera elegir_lote."""
     df = pd.read_excel(generado, sheet_name='Todos', dtype=str).fillna('')
@@ -526,9 +607,10 @@ def main(simular=False):
     for v in vendedores:
         try:
             libro_v = reintentar(cliente.open_by_key, v['archivo'])
-            hoja_leads = _hoja_leads(libro_v)
-            filas = leer_archivo(hoja_leads)
+            filas = leer_archivo(_hoja_leads(libro_v))
             hoja_panel, panel_nuevo = _hoja_panel(libro_v, crear=not simular)
+            hoja_carpeta, carpeta_nueva = _hoja_calificados(libro_v, crear=not simular)
+            carpeta = leer_archivo(hoja_carpeta) if hoja_carpeta else []
         except Exception as e:
             print(f"   {v['nombre']}: no pude abrir su archivo ({str(e)[:60]}), lo salteo")
             continue
@@ -545,6 +627,8 @@ def main(simular=False):
             print(f"   {v['nombre']}: panel creado")
         if hoja_panel:
             _desplegables(libro_v, hoja_panel, nichos, ciudades)
+        if carpeta_nueva:
+            _formato_calificados(libro_v, hoja_carpeta)
 
         def tomar(nicho, ciudad, faltan):
             """Saca `faltan` leads del pozo y se los anota en el master.
@@ -584,15 +668,19 @@ def main(simular=False):
 
         # 0. Lo que el master le tiene asignado de antes y no esta en su
         # archivo se suma ahora: es gestion ya hecha y no se puede perder.
-        rescatados = rescatar_del_master(v['nombre'], master, por_clave,
-                                         {f['clave'] for f in filas})
+        rescatados = rescatar_del_master(
+            v['nombre'], master, por_clave,
+            {f['clave'] for f in filas} | {f['clave'] for f in carpeta})
         if rescatados:
             print(f"   {v['nombre']}: {len(rescatados)} leads que ya tenia asignados "
                   f"en el master y no estaban en su archivo, se los llevo")
             filas = filas + rescatados
 
         # 1. Lo que trabajo vuelve al master.
-        cambios = cambios_al_master(filas, master)
+        # Las dos hojas: el vendedor sigue moviendo los de la carpeta de
+        # "Le interesó" a "Demo iniciada" y a "Cliente activo", y si eso no
+        # llegara al master no habria venta que liquidar.
+        cambios = cambios_al_master(filas + carpeta, master)
         for clave, f in cambios:
             m = master[clave]
             escrituras_master.append({
@@ -617,6 +705,7 @@ def main(simular=False):
               f"{'REPONE' if repone else 'sigue'} ({por_que})")
 
         siguen, lote, sueltos = filas, [], []
+        carpeta_final, movidos = carpeta, 0
         # El rubro pedido manda; si nunca eligio, sigue con el que tiene. La
         # ciudad solo filtra si la eligio a proposito: vacia es toda Argentina.
         nicho, ciudad = pedido[0] or actual[0], pedido[1]
@@ -624,7 +713,8 @@ def main(simular=False):
         if repone:
             # Lote nuevo: los cerrados salen, los seguimientos se quedan. El
             # cambio de nicho aca siempre vale: el lote arranca de cero igual.
-            siguen = [f for f in filas if f['estado'] not in ESTADOS_CERRADOS]
+            siguen, carpeta_final = repartir_por_hoja(filas, carpeta)
+            movidos = len(carpeta_final) - len(carpeta)
             lote = tomar(nicho, ciudad, LOTE - len(siguen))
             if cambiar:
                 print(f'      cambia: {_frase(actual)} -> {_frase(pedido)}')
@@ -637,7 +727,9 @@ def main(simular=False):
         elif cambiar and libre:
             # Cambio a mitad de lote: lo que ya trabajo se queda, lo que ni
             # miro vuelve a la bolsa para que lo agarre otro.
-            siguen = [f for f in filas if contactado(f['estado'])]
+            trabajados = [f for f in filas if contactado(f['estado'])]
+            siguen, carpeta_final = repartir_por_hoja(trabajados, carpeta)
+            movidos = len(carpeta_final) - len(carpeta)
             sueltos = [f for f in filas if not contactado(f['estado'])]
             for f in sueltos:
                 m = master.get(f['clave'])
@@ -655,8 +747,12 @@ def main(simular=False):
         # Se rearma el archivo si cambio algo de lo que el vendedor ve. Los
         # rescatados cuentan: si no, quedan asignados a su nombre en el master
         # y el nunca los ve.
-        if lote or rescatados or sueltos:
-            nuevas_asignaciones.append((v, siguen, lote))
+        if movidos:
+            print(f'      {movidos} pasan a {HOJA_CALIFICADOS} '
+                  f'({len(carpeta_final)} guardados en total)')
+
+        if lote or rescatados or sueltos or movidos:
+            nuevas_asignaciones.append((v, siguen, lote, carpeta_final))
 
         # 4. El panel, siempre: aunque no cambie nada, los numeros se mueven.
         if hoja_panel:
@@ -666,6 +762,7 @@ def main(simular=False):
                        if lote else actual)
             paneles.append((v, hoja_panel, filas_panel(
                 v['nombre'], (pedido[0] or logrado[0], pedido[1]), res,
+                len(carpeta_final),
                 mensaje_filtro(pedido, logrado, libre, motivo_cambio, repone),
                 mensaje_proximo(res, minimo_para(final)))))
 
@@ -680,14 +777,22 @@ def main(simular=False):
                    {'valueInputOption': 'RAW', 'data': escrituras_master})
         print(f'\nMaster actualizado: {len(escrituras_master)} celdas')
 
-    for v, siguen, lote in nuevas_asignaciones:
-        hoja = _hoja_leads(reintentar(cliente.open_by_key, v['archivo']))
+    for v, siguen, lote, carpeta_final in nuevas_asignaciones:
+        libro_v = reintentar(cliente.open_by_key, v['archivo'])
+        hoja = _hoja_leads(libro_v)
         filas = ([COLUMNAS_VENDEDOR] +
                  [_fila_conservada(f) for f in siguen] +
                  [_fila_para_vendedor(l) for l in lote])
         reintentar(hoja.clear)
         reintentar(hoja.update, values=filas, range_name='A1')
-        print(f"   {v['nombre']}: archivo rearmado con {len(filas) - 1} leads")
+
+        carpeta_hoja, _ = _hoja_calificados(libro_v)
+        reintentar(carpeta_hoja.clear)
+        reintentar(carpeta_hoja.update,
+                   values=[COLUMNAS_VENDEDOR] + [_fila_conservada(f) for f in carpeta_final],
+                   range_name='A1')
+        print(f"   {v['nombre']}: {len(filas) - 1} en la tanda, "
+              f"{len(carpeta_final)} guardados")
 
     for v, hoja, valores in paneles:
         reintentar(hoja.update, values=valores, range_name=f'A1:B{ALTO_PANEL}')
@@ -722,12 +827,27 @@ def demo():
     assert fila[V['Motivo']] == '' and fila[V['Última gestión']] == ''
     print('OK  _fila_para_vendedor: entra Sin contactar y sin gestion previa')
 
-    abiertos = [{'estado': 'Volver a llamar'}, {'estado': 'Le interesó'},
-                {'estado': 'Demo iniciada'}, {'estado': SIN_CONTACTAR}]
-    cerrados = [{'estado': 'No interesado'}, {'estado': 'Cliente activo'}]
-    assert all(f['estado'] not in ESTADOS_CERRADOS for f in abiertos)
-    assert all(f['estado'] in ESTADOS_CERRADOS for f in cerrados)
-    print('OK  ESTADOS_CERRADOS: los seguimientos abiertos no se tiran')
+    # --- adonde va cada negocio cuando entra una tanda nueva ----------------
+    tanda = [{'clave': 'a', 'estado': 'Volver a llamar'},
+             {'clave': 'b', 'estado': 'Le interesó'},
+             {'clave': 'c', 'estado': 'Demo iniciada'},
+             {'clave': 'd', 'estado': 'Cliente activo'},
+             {'clave': 'e', 'estado': 'No interesado'}]
+    siguen, carpeta = repartir_por_hoja(tanda, [])
+    assert [f['clave'] for f in siguen] == ['a'], siguen
+    assert [f['clave'] for f in carpeta] == ['b', 'c', 'd'], carpeta
+    print('OK  repartir_por_hoja: el seguimiento se queda, el interesado se guarda')
+
+    # La carpeta se acumula entre tandas y no se duplica.
+    vieja = [{'clave': 'x', 'estado': 'Le interesó'}, {'clave': 'b', 'estado': 'Demo iniciada'}]
+    _, carpeta = repartir_por_hoja(tanda, vieja)
+    assert [f['clave'] for f in carpeta] == ['x', 'b', 'c', 'd'], carpeta
+    assert carpeta[1]['estado'] == 'Demo iniciada', 'gana lo que ya estaba en la carpeta'
+
+    # Un interesado que despues dijo que no, sale de la carpeta.
+    _, carpeta = repartir_por_hoja([], [{'clave': 'x', 'estado': 'No interesado'}])
+    assert carpeta == [], carpeta
+    print('OK  repartir_por_hoja: la carpeta acumula, no duplica y suelta a los que dijeron que no')
 
     # --- el panel -----------------------------------------------------------
     por_clave = {'aaa': {'nicho': 'Peluquerías'}, 'bbb': {'nicho': 'Peluquerías'},
@@ -761,7 +881,7 @@ def demo():
     assert 'faltan 5 conversaciones' in mensaje_proximo(
         {'asignados': 30, 'contactados': 30, 'hablados': 15, 'sin_contactar': 0}, 20)
     assert 'lote nuevo' in mensaje_proximo(
-        {'asignados': 30, 'contactados': 30, 'hablados': 20, 'sin_contactar': 0}, 20)
+        {'asignados': 30, 'contactados': 30, 'hablados': 10, 'sin_contactar': 0}, 10)
     assert 'Todavia no tenes leads' in mensaje_proximo(
         {'asignados': 0, 'contactados': 0, 'hablados': 0, 'sin_contactar': 0}, 20)
     # Al de 7 leads se le pide 5, no 20: la vara del panel es la misma que la
@@ -771,14 +891,16 @@ def demo():
     print('OK  mensaje_proximo: dice exactamente que le falta')
 
     res = {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18}
-    p = filas_panel('Marto', ('Peluquerías', 'Rosario'), res, 'aviso', 'proximo')
+    p = filas_panel('Marto', ('Peluquerías', 'Rosario'), res, 4, 'aviso', 'proximo')
+    assert '4 guardados' in p[1][0], p[1][0]
+    assert 'guardados' not in filas_panel('Marto', ('P', ''), res, 0, 'a', 'b')[1][0]
     assert len(p) == ALTO_PANEL and all(len(f) == 2 for f in p)
     assert p[0][0] == 'Panel de Marto', 'el nombre va arriba de todo'
     assert p[FILA_NICHO - 1] == ['Rubro', 'Peluquerías']
     assert p[FILA_CIUDAD - 1] == ['Ciudad', 'Rosario']
     # Sin ciudad elegida la celda dice "Toda Argentina", no la ciudad que le
     # toco: si no, quedaria filtrado por una ciudad que nunca pidio.
-    sin = filas_panel('Marto', ('Peluquerías', ''), res, 'aviso', 'proximo')
+    sin = filas_panel('Marto', ('Peluquerías', ''), res, 0, 'aviso', 'proximo')
     assert sin[FILA_CIUDAD - 1] == ['Ciudad', TODA_ARGENTINA], sin[FILA_CIUDAD - 1]
     for fila in TITULOS[1:] + MENSAJES:
         assert p[fila - 1][1] == '', f'la fila {fila} se combina, la B tiene que ir vacia'

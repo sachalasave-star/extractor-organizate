@@ -10,7 +10,7 @@ Google. Lo que habla con Sheets vive en repartir_leads.py.
 from modules.telefono import canonico
 
 LOTE = 30              # cuantos leads tiene un vendedor a la vez
-MINIMO_HABLADOS = 20   # de esos, con cuantos tiene que haber hablado para reponer
+MINIMO_HABLADOS = 10   # de esos, con cuantos tiene que haber hablado para reponer
 MAXIMO_PARA_CAMBIAR = 10   # hasta cuantas llamadas se puede cambiar de nicho
 
 SIN_CONTACTAR = 'Sin contactar'
@@ -18,6 +18,12 @@ SIN_CONTACTAR = 'Sin contactar'
 # Estados que por si solos prueban que hubo una conversacion: no se llega a
 # "Le interesó" sin que alguien te atienda.
 ESTADOS_CON_CHARLA = {'Le interesó', 'Demo iniciada', 'Cliente activo'}
+
+# Los mismos tres son los que se guardan aparte cuando entra una tanda nueva, en
+# la hoja de interesados. No es casualidad que sean los mismos: son exactamente
+# los negocios donde hubo una charla que valio la pena, y perderlos de vista
+# entre 30 llamados en frio es la forma mas cara de tirar trabajo hecho.
+CALIFICADOS = ESTADOS_CON_CHARLA
 
 # Motivos que dicen explicitamente que NO se hablo con el negocio. El resto de
 # los motivos ("Precio alto", "Ya tiene sistema", "Pidió que llame después",
@@ -178,6 +184,7 @@ def demo():
     assert not contactado('Sin contactar') and not contactado('') and not contactado(None)
     assert contactado('No interesado') and contactado('Cliente activo')
 
+    assert CALIFICADOS == ESTADOS_CON_CHARLA
     assert hablo('Le interesó', '')          # el estado ya lo prueba
     assert hablo('Demo iniciada', None)
     assert hablo('No interesado', 'Precio alto')
@@ -200,28 +207,30 @@ def demo():
     ok, por_que = puede_reponer(solo_intentos)
     assert not ok and 'hablo con 0' in por_que, por_que
 
-    # 19 hablados: falta uno. La regla es 20, no "casi 20".
-    casi = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 19 +
-            [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 11)
+    # 9 hablados: falta uno. La regla es 10, no "casi 10".
+    casi = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 9 +
+            [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 21)
     ok, por_que = puede_reponer(casi)
-    assert not ok and 'hablo con 19' in por_que, por_que
+    assert not ok and 'hablo con 9' in por_que, por_que
 
     # Las dos condiciones juntas.
-    completo = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 20 +
-                [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 10)
+    completo = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 10 +
+                [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 20)
     ok, por_que = puede_reponer(completo)
     assert ok, por_que
     assert puede_reponer([])[0], 'el vendedor nuevo tiene que recibir su primer lote'
-    print('OK  puede_reponer: exige contactar todos Y hablar con 20, juntas')
+    print('OK  puede_reponer: exige contactar todos Y hablar con 10, juntas')
 
     # Lote incompleto: la vara baja en proporcion, si no nunca repone.
-    assert minimo_para([0] * 30) == 20 and minimo_para([0] * 37) == 20
-    assert minimo_para([0] * 7) == 5 and minimo_para([0] * 1) == 1
-    chico = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 5 +
-             [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 2)
-    assert puede_reponer(chico)[0], 'con 7 leads no se pueden pedir 20 charlas'
-    assert not puede_reponer(chico[1:] + [chico[-1]])[0], '4 charlas de 7 no alcanzan'
-    print('OK  minimo_para: el lote chico pide la misma proporcion, no 20 fijo')
+    assert minimo_para([0] * 30) == 10 and minimo_para([0] * 37) == 10
+    assert minimo_para([0] * 7) == 3 and minimo_para([0] * 1) == 1
+    chico = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 3 +
+             [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 4)
+    assert puede_reponer(chico)[0], 'con 7 leads no se pueden pedir 10 charlas'
+    flojo = ([{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 2 +
+             [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 5)
+    assert not puede_reponer(flojo)[0], '2 charlas de 7 no alcanzan, el minimo es 3'
+    print('OK  minimo_para: el lote chico pide la misma proporcion, no 10 fijo')
 
     # --- cambio de nicho ----------------------------------------------------
     assert puede_cambiar_nicho([])[0], 'el que todavia no empezo puede elegir'
