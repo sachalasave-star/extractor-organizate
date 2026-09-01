@@ -51,13 +51,6 @@ jobs:
           SHEET_ID: ${{ secrets.SHEET_ID }}
         run: python sincronizar_sheets.py
 
-      - name: Repartir leads a los vendedores
-        if: always()          # el script se saltea solo si todavia no hay secrets
-        env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-        run: python repartir_leads.py
-
       - name: Liquidar comisiones
         if: always()          # el script se saltea solo si todavia no hay secrets
         env:

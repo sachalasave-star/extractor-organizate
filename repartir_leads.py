@@ -265,8 +265,9 @@ def mensaje_nicho(elegido, actual, puede, motivo, repone):
     pidio se quedo sin negocios. Las dos cosas hay que decirselas distinto.
     """
     if not elegido or elegido == actual:
-        return ('Podes cambiar de nicho hasta la llamada 10, y otra vez cada vez que te '
-                'entra un lote nuevo. Elegi del desplegable y se cambia solo.')
+        return ('Podes cambiar de rubro hasta la llamada 10, y otra vez cada vez que te '
+                'entra una tanda nueva. Elegi del desplegable: los negocios se cambian '
+                'dentro de la hora, no al instante.')
     if puede or repone:
         return (f'No quedan negocios de {elegido} sin repartir, asi que seguis en '
                 f'{actual}. Proba con otro rubro.')
@@ -293,7 +294,7 @@ def filas_panel(nombre, nicho, ciudad, res, aviso_nicho, aviso_proximo):
     """Las 16 filas del panel. Logica pura: se testea sin tocar Google."""
     return [
         [f'Panel de {nombre}', ''],
-        ['Se actualiza solo dos veces por dia. Vos solo tocas el nicho.', ''],
+        ['Se actualiza solo cada hora. Vos solo tocas el rubro.', ''],
         ['', ''],
         ['MI NICHO', ''],
         ['Nicho', nicho or '(sin asignar)'],

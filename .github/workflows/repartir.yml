@@ -1,0 +1,37 @@
+name: Repartir leads
+
+# Vive aparte del scraper a proposito. Colgado de el corria dos veces por dia,
+# y el vendedor que cambiaba de rubro en su panel se quedaba hasta 12 horas
+# viendo los mismos negocios: parecia que el boton no hacia nada. Aca tarda
+# como mucho una hora.
+#
+# Ademas no depende del scraper para nada: usa el Excel que ya esta commiteado
+# en el repo. Que sea de la corrida anterior da igual, son 90 mil negocios.
+on:
+  schedule:
+    - cron: '20 * * * *'      # al minuto 20, lejos del scraper que arranca en punto
+  workflow_dispatch:
+
+concurrency:
+  group: repartir             # dos repartos juntos se pisarian las asignaciones
+  cancel-in-progress: false
+
+jobs:
+  repartir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Repartir leads a los vendedores
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python repartir_leads.py
