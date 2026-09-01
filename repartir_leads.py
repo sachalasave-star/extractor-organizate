@@ -298,16 +298,16 @@ def mensaje_filtro(pedido, logrado, puede, motivo, repone):
 def mensaje_proximo(res, minimo):
     """Que le falta para que le entre otro lote."""
     if not res['asignados']:
-        return 'Todavia no tenes leads. Te entran en la proxima actualizacion.'
+        return 'Todavia no tenes negocios. Te entran en la proxima actualizacion.'
     if res['sin_contactar']:
         return (f"Te faltan {res['sin_contactar']} por contactar. Cuando llames a los "
                 f"{res['asignados']} y hayas hablado con {minimo}, te entra "
-                f'un lote nuevo.')
+                f'una tanda nueva.')
     if res['hablados'] < minimo:
         return (f"Ya contactaste a los {res['asignados']}. Te faltan "
                 f"{minimo - res['hablados']} conversaciones para que entre "
-                f'el lote nuevo.')
-    return 'Listo: en la proxima actualizacion te entra un lote nuevo.'
+                f'la tanda nueva.')
+    return 'Listo: en la proxima actualizacion te entra una tanda nueva.'
 
 
 def filas_panel(nombre, pedido, res, guardados, aviso_filtro, aviso_proximo):
@@ -880,9 +880,9 @@ def demo():
         {'asignados': 30, 'contactados': 12, 'hablados': 8, 'sin_contactar': 18}, 20)
     assert 'faltan 5 conversaciones' in mensaje_proximo(
         {'asignados': 30, 'contactados': 30, 'hablados': 15, 'sin_contactar': 0}, 20)
-    assert 'lote nuevo' in mensaje_proximo(
+    assert 'tanda nueva' in mensaje_proximo(
         {'asignados': 30, 'contactados': 30, 'hablados': 10, 'sin_contactar': 0}, 10)
-    assert 'Todavia no tenes leads' in mensaje_proximo(
+    assert 'Todavia no tenes negocios' in mensaje_proximo(
         {'asignados': 0, 'contactados': 0, 'hablados': 0, 'sin_contactar': 0}, 20)
     # Al de 7 leads se le pide 5, no 20: la vara del panel es la misma que la
     # que despues decide si repone.

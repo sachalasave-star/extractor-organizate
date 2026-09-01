@@ -116,8 +116,7 @@ def puede_cambiar_nicho(filas, maximo=MAXIMO_PARA_CAMBIAR):
     r = resumen_lote(filas)
     if r['contactados'] < maximo:
         return True, f"llevas {r['contactados']} de {maximo} llamadas"
-    return False, (f"ya llamaste a {r['contactados']}, "
-                   f"se desbloquea cuando termines el lote")
+    return False, f"ya llamaste a {r['contactados']}"
 
 
 def _clave(lead):
@@ -238,7 +237,7 @@ def demo():
     assert puede_cambiar_nicho(nueve)[0], 'con 9 llamadas todavia se puede'
     diez = [{'estado': 'No interesado', 'motivo': 'Precio alto'}] * 10 +            [{'estado': 'Sin contactar', 'motivo': ''}] * 20
     ok, por_que = puede_cambiar_nicho(diez)
-    assert not ok and 'ya llamaste a 10' in por_que, por_que
+    assert not ok and por_que == 'ya llamaste a 10', por_que
     print('OK  puede_cambiar_nicho: se traba a las 10 llamadas, no a las 11')
 
     # --- eleccion del lote --------------------------------------------------
