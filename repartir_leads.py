@@ -273,13 +273,14 @@ def _frase(filtro):
     return nicho or (f'negocios en {ciudad}' if ciudad else 'nada')
 
 
-def mensaje_filtro(pedido, logrado, puede, motivo, repone):
+def mensaje_filtro(pedido, logrado, conseguidos, puede, motivo, repone):
     """Que decirle sobre el rubro y la ciudad, en castellano.
 
-    `logrado` es lo que EFECTIVAMENTE quedo en su lote despues de repartir. Si
-    pidio una cosa y quedo otra hay dos razones posibles y se dicen distinto: o
-    se le nego el cambio por estar a mitad de tanda, o lo que pidio se quedo sin
-    negocios libres.
+    `logrado` es lo que EFECTIVAMENTE quedo en su tanda, y `conseguidos` cuantos
+    de los nuevos son de lo que pidio. Si pidio una cosa y quedo otra hay tres
+    razones y se dicen distinto: se le nego el cambio por estar a mitad de tanda,
+    lo que pidio se agoto del todo, o alcanzaba para unos pocos y se completo con
+    otra cosa. La ultima es la que mas confunde si no se explica.
     """
     ln, lc = logrado
     ahora = ('Ahora estas llamando ' + (f'{ln} en {lc}.' if ln and lc else f'{ln or "nada"}.'))
@@ -288,6 +289,9 @@ def mensaje_filtro(pedido, logrado, puede, motivo, repone):
         return (ahora + ' Podes cambiar el rubro y la ciudad hasta la llamada 10, y otra '
                 'vez cada vez que te entra una tanda nueva. Tarda hasta una hora en '
                 'aplicarse, no es al instante.')
+    if conseguidos:
+        return (ahora + f' Solo quedaban {conseguidos} de {_frase(pedido)}, asi que te '
+                'completamos la tanda con lo mas parecido que habia.')
     if puede or repone:
         return (ahora + f' No quedan negocios de {_frase(pedido)} sin repartir. Proba con '
                 'otro rubro, o con toda Argentina.')
@@ -648,12 +652,13 @@ def main(simular=False):
             intentos.append(('', ''))
             elegidos = []
             for n, c in intentos:
+                if len(elegidos) >= faltan:
+                    break
                 pozo = [l for l in disponibles
                         if (not n or l.get('nicho') == n)
                         and (not c or l.get('ciudad', '').strip() == c)]
-                elegidos = elegir_lote(pozo, faltan, tomados)
-                if elegidos:
-                    break
+                ya = tomados | {_clave(x) for x in elegidos}
+                elegidos += elegir_lote(pozo, faltan - len(elegidos), ya)
             for lead in elegidos:
                 clave = _clave(lead)
                 tomados.add(clave)
@@ -758,12 +763,17 @@ def main(simular=False):
         if hoja_panel:
             final = siguen + [{'estado': SIN_CONTACTAR, 'motivo': ''} for _ in lote]
             res = resumen_lote(final)
-            logrado = ((lote[0].get('nicho'), lote[0].get('ciudad', '').strip())
+            logrado = ((_mas_comun([l.get('nicho') for l in lote]),
+                        _mas_comun([l.get('ciudad', '').strip() for l in lote]))
                        if lote else actual)
+            conseguidos = sum(1 for l in lote
+                              if (not pedido[0] or l.get('nicho') == pedido[0])
+                              and (not pedido[1] or l.get('ciudad', '').strip() == pedido[1]))
             paneles.append((v, hoja_panel, filas_panel(
                 v['nombre'], (pedido[0] or logrado[0], pedido[1]), res,
                 len(carpeta_final),
-                mensaje_filtro(pedido, logrado, libre, motivo_cambio, repone),
+                mensaje_filtro(pedido, logrado, conseguidos if conseguidos < len(lote) else 0,
+                               libre, motivo_cambio, repone),
                 mensaje_proximo(res, minimo_para(final)))))
 
     if simular:
@@ -863,17 +873,20 @@ def demo():
     assert _frase(('', 'Rosario')) == 'negocios en Rosario'
 
     # Le dieron lo que pidio: rubro y ciudad.
-    ok = mensaje_filtro(('Spas', 'Rosario'), ('Spas', 'Rosario'), True, '', False)
+    ok = mensaje_filtro(('Spas', 'Rosario'), ('Spas', 'Rosario'), 0, True, '', False)
     assert 'Ahora estas llamando Spas en Rosario.' in ok and 'Podes cambiar' in ok, ok
     # Nunca eligio ciudad: que le haya tocado Córdoba no es un pedido incumplido.
-    assert 'Podes cambiar' in mensaje_filtro(('Spas', ''), ('Spas', 'Córdoba'), True, '', False)
+    assert 'Podes cambiar' in mensaje_filtro(('Spas', ''), ('Spas', 'Córdoba'), 0, True, '', False)
     # Pidio a mitad de tanda y no le toca: se le guarda.
-    bloq = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Córdoba'), False,
+    bloq = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Córdoba'), 0, False,
                           'ya llamaste a 12', False)
     assert 'Pediste Spas en Rosario' in bloq and 'cuando termines la tanda' in bloq, bloq
     # Se lo permitieron pero no quedaban negocios de eso.
-    vacio = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Rosario'), True, '', False)
+    vacio = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Rosario'), 0, True, '', False)
     assert 'No quedan negocios de Spas en Rosario' in vacio, vacio
+    # Alcanzaban para 11 de 30: eso no es "no quedan", y confunde si se dice mal.
+    poco = mensaje_filtro(('Spas', 'Rosario'), ('Peluquerías', 'Rosario'), 11, True, '', False)
+    assert 'Solo quedaban 11 de Spas en Rosario' in poco, poco
     print('OK  mensaje_filtro: distingue cumplido, negado y agotado, con ciudad')
 
     assert 'faltan 18 por contactar' in mensaje_proximo(
