@@ -34,4 +34,7 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
+          # Sin esto la hoja de seguimiento se protege en modo aviso, o sea que
+          # cualquiera podria pisar los numeros del equipo.
+          SHEET_OWNER: ${{ secrets.SHEET_OWNER }}
         run: python repartir_leads.py

@@ -48,6 +48,7 @@ CONFIG = '⚙️ Config'
 PANEL = '📊 Panel de ventas'
 RESUMEN = '📁 Resumen por nicho'
 RANKING = '🏆 Ranking (interno)'
+SEGUIMIENTO = '🚩 Seguimiento del equipo'
 
 # Filas de Config donde viven las listas (1-based, como las ve el usuario)
 FILA_VENDEDORES = 3          # A3 hacia abajo

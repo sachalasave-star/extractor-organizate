@@ -41,10 +41,10 @@ from modules.comisiones import (ASIGNAR, COLUMNAS_ASIGNAR, COLUMNAS_LIQUIDACION,
 from modules.estilo import (BLANCO, DINERO, FUENTE, FUENTE_DATOS, LINEA, TINTA,
                             TINTA_SUAVE, hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, CONFIG, FILA_VENDEDORES, IDX, PANEL, RANKING,
-                              RESUMEN, col_letra, reintentar)
+                              RESUMEN, col_letra, reintentar, SEGUIMIENTO)
 from sincronizar_sheets import _abrir_libro, _credenciales, _sheet_id
 
-FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, LIQUIDACION, REFERIDOS,
+FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, SEGUIMIENTO, LIQUIDACION, REFERIDOS,
                    RESUMEN_COMISIONES, ASIGNAR)
 
 # Referidos: 1 titulo, 2 ayuda, 3 encabezados, 4 en adelante los vendedores.

@@ -7,6 +7,8 @@ ver `puede_reponer`.
 Todo lo de este modulo es logica pura sobre listas de diccionarios, sin tocar
 Google. Lo que habla con Sheets vive en repartir_leads.py.
 """
+from datetime import date, datetime
+
 from modules.telefono import canonico
 
 LOTE = 30              # cuantos leads tiene un vendedor a la vez
@@ -117,6 +119,70 @@ def puede_cambiar_nicho(filas, maximo=MAXIMO_PARA_CAMBIAR):
     if r['contactados'] < maximo:
         return True, f"llevas {r['contactados']} de {maximo} llamadas"
     return False, f"ya llamaste a {r['contactados']}"
+
+
+DIAS_SIN_VENDER = 30       # a partir de aca el vendedor aparece marcado
+VENDIO = 'Cliente activo'
+EN_EL_EMBUDO = ('Le interesó', 'Demo iniciada')
+FORMATO_FECHA = '%d/%m/%Y'
+
+
+def fecha(texto):
+    """La fecha de una celda, o None si esta vacia o escrita a mano de cualquier
+    forma. Nunca revienta: son celdas que edita gente."""
+    try:
+        return datetime.strptime((texto or '').strip(), FORMATO_FECHA).date()
+    except (ValueError, TypeError):
+        return None
+
+
+def actividad(leads, desde=None, hoy=None, dias=DIAS_SIN_VENDER):
+    """Que hizo un vendedor y hace cuanto que no vende.
+
+    `leads` es TODO lo que el master le tiene asignado, no la tanda de hoy: los
+    que cerro como "No interesado" salieron de su archivo pero siguen contando
+    como trabajo hecho.
+
+    `desde` es cuando entro al equipo. Sin eso no se puede distinguir al que
+    lleva dos meses sin vender del que arranco el martes, que es justo la
+    confusion que haria inutil el aviso.
+
+    Esto NO decide nada sobre el vendedor: cuenta y describe. La decision es
+    del dueño, y por eso el que no vende igual aparece con sus numeros al lado.
+    """
+    hoy = hoy or date.today()
+    ventas = [f for f in leads if (f.get('estado') or '').strip() == VENDIO]
+    fechas = [d for d in (fecha(f.get('ultima')) for f in ventas) if d]
+    ultima = max(fechas) if fechas else None
+
+    r = {
+        'asignados': len(leads),
+        'llamados': sum(1 for f in leads if contactado(f.get('estado'))),
+        'conversaciones': sum(1 for f in leads if hablo(f.get('estado'), f.get('motivo'))),
+        'en_el_embudo': sum(1 for f in leads
+                            if (f.get('estado') or '').strip() in EN_EL_EMBUDO),
+        'ventas': len(ventas),
+        'ultima_venta': ultima,
+        'dias_sin_vender': (hoy - ultima).days if ultima else None,
+        'antiguedad': (hoy - desde).days if desde else None,
+    }
+    r['situacion'], r['alerta'] = _situacion(r, dias)
+    return r
+
+
+def _situacion(r, dias=DIAS_SIN_VENDER):
+    """(frase, hay_que_mirarlo). La frase va tal cual a la planilla."""
+    if r['dias_sin_vender'] is not None and r['dias_sin_vender'] < dias:
+        return f"Vendio hace {r['dias_sin_vender']} dias", False
+    if r['antiguedad'] is not None and r['antiguedad'] < dias:
+        return f"Arrancando, hace {r['antiguedad']} dias", False
+    if r['ventas']:
+        return f"{r['dias_sin_vender']} dias sin vender", True
+    if not r['llamados']:
+        return 'No llamo a nadie todavia', True
+    if r['en_el_embudo']:
+        return f"Sin ventas, pero {r['en_el_embudo']} en el embudo", True
+    return f"Sin ventas en {r['llamados']} llamados", True
 
 
 def _clave(lead):
@@ -230,6 +296,51 @@ def demo():
              [{'estado': 'No interesado', 'motivo': 'No atiende'}] * 5)
     assert not puede_reponer(flojo)[0], '2 charlas de 7 no alcanzan, el minimo es 3'
     print('OK  minimo_para: el lote chico pide la misma proporcion, no 10 fijo')
+
+    # --- actividad del vendedor ---------------------------------------------
+    from datetime import timedelta
+    hoy = date(2026, 9, 1)
+    ayer = (hoy - timedelta(days=5)).strftime(FORMATO_FECHA)
+    viejo = (hoy - timedelta(days=70)).strftime(FORMATO_FECHA)
+    arranco = hoy - timedelta(days=200)
+
+    assert fecha('01/09/2026') == date(2026, 9, 1)
+    assert fecha('') is None and fecha(None) is None and fecha('el martes') is None
+
+    vende = actividad([{'estado': 'Cliente activo', 'motivo': '', 'ultima': ayer},
+                       {'estado': 'No interesado', 'motivo': 'Precio alto', 'ultima': ayer}],
+                      desde=arranco, hoy=hoy)
+    assert not vende['alerta'] and vende['ventas'] == 1 and vende['dias_sin_vender'] == 5
+    assert vende['conversaciones'] == 2, vende
+
+    # Vendio, pero hace 70 dias: eso es lo que hay que ver.
+    frio = actividad([{'estado': 'Cliente activo', 'motivo': '', 'ultima': viejo}],
+                     desde=arranco, hoy=hoy)
+    assert frio['alerta'] and frio['situacion'] == '70 dias sin vender', frio['situacion']
+
+    # Recien entrado y sin vender: NO es una alerta, es alguien arrancando.
+    nuevo = actividad([{'estado': 'Sin contactar', 'motivo': '', 'ultima': ''}] * 30,
+                      desde=hoy - timedelta(days=3), hoy=hoy)
+    assert not nuevo['alerta'] and 'Arrancando' in nuevo['situacion'], nuevo['situacion']
+
+    # Un mes adentro y ni una llamada.
+    dormido = actividad([{'estado': 'Sin contactar', 'motivo': '', 'ultima': ''}] * 30,
+                        desde=arranco, hoy=hoy)
+    assert dormido['alerta'] and dormido['situacion'] == 'No llamo a nadie todavia'
+
+    # Trabajando fuerte y sin cerrar: se marca igual, pero la frase no lo trata
+    # como a un vago. La diferencia importa cuando el dueño decide que hacer.
+    remando = actividad([{'estado': 'Le interesó', 'motivo': '', 'ultima': ayer}] * 4 +
+                        [{'estado': 'No interesado', 'motivo': 'Precio alto', 'ultima': ayer}] * 26,
+                        desde=arranco, hoy=hoy)
+    assert remando['alerta'] and remando['situacion'] == 'Sin ventas, pero 4 en el embudo'
+    assert remando['conversaciones'] == 30
+
+    # Sin fecha de alta no se puede saber si es nuevo: se lo marca igual, que es
+    # el lado seguro (aparece en la lista y el dueño mira).
+    sin_alta = actividad([{'estado': 'No interesado', 'motivo': 'No atiende'}], hoy=hoy)
+    assert sin_alta['alerta'], sin_alta
+    print('OK  actividad: separa al que arranca del que se durmio, y no descarta a nadie')
 
     # --- cambio de nicho ----------------------------------------------------
     assert puede_cambiar_nicho([])[0], 'el que todavia no empezo puede elegir'

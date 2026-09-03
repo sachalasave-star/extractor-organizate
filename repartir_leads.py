@@ -33,14 +33,16 @@ import pandas as pd
 
 from collections import Counter
 
-from modules.asignacion import (CALIFICADOS, LOTE, contactado, elegir_lote,
-                                minimo_para, puede_cambiar_nicho, puede_reponer,
-                                resumen_lote, _clave)
+from modules.asignacion import (CALIFICADOS, DIAS_SIN_VENDER, FORMATO_FECHA, LOTE,
+                                actividad,
+                                contactado, elegir_lote, fecha, minimo_para,
+                                puede_cambiar_nicho, puede_reponer, resumen_lote,
+                                _clave)
 from modules.estilo import (BLANCO, DINERO, FUENTE, TINTA, TINTA_SUAVE,
                             hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, COLUMNAS, CONFIG, FILA_VENDEDORES, IDX,
-                              MOTIVOS, NOMBRES_ESTADO, SIN_CONTACTAR, col_letra,
-                              reintentar)
+                              MOTIVOS, NOMBRES_ESTADO, SEGUIMIENTO, SIN_CONTACTAR,
+                              col_letra, reintentar)
 from modules.telefono import canonico
 from sincronizar_sheets import GENERADO, _abrir_libro, _cliente_gspread, _sheet_id
 
@@ -107,6 +109,7 @@ def estado_del_master(libro, titulos):
                 'estado': fila[IDX['Estado'] - COL_DESDE].strip(),
                 'motivo': fila[IDX['Motivo'] - COL_DESDE].strip(),
                 'observaciones': fila[IDX['Observaciones'] - COL_DESDE].strip(),
+                'ultima': fila[IDX['Última gestión'] - COL_DESDE].strip(),
             }
     return salida
 
@@ -554,6 +557,215 @@ def repartir_por_hoja(filas, carpeta):
     return siguen, nueva
 
 
+# --------------------------------------------------------------------------
+# Seguimiento del equipo
+#
+# Una hoja en el master, para el dueño, con una fila por vendedor: cuanto
+# trabajo y hace cuanto que no vende. Nadie se da de baja solo: el que lleva un
+# mes sin vender aparece arriba con sus numeros al lado, y decide una persona.
+# --------------------------------------------------------------------------
+
+COL_ALTA = 10                 # Config!K, "en el equipo desde"
+COLUMNAS_SEGUIMIENTO = ['Vendedor', 'En el equipo desde', 'Asignados', 'Llamados',
+                        'Conversaciones', 'En el embudo', 'Ventas', 'Última venta',
+                        'Días sin vender', 'Situación']
+
+
+def altas(libro, vendedores, master, hoy=None, escribir=True):
+    """{vendedor: fecha en que entro al equipo}, guardada en Config!K.
+
+    La primera vez que se ve a alguien se le escribe la fecha, para que en la
+    corrida siguiente ya se sepa si es nuevo o lleva meses. Al que ya tiene
+    gestiones hechas se le pone la mas vieja: entro al menos ese dia, y arrancar
+    el reloj hoy lo haria pasar por recien llegado un mes entero.
+    """
+    hoy = hoy or date.today()
+    hoja = reintentar(libro.worksheet, CONFIG)
+    if hoja.col_count <= COL_ALTA:
+        reintentar(libro.batch_update, {'requests': [{'updateSheetProperties': {
+            'properties': {'sheetId': hoja.id,
+                           'gridProperties': {'columnCount': COL_ALTA + 1}},
+            'fields': 'gridProperties.columnCount'}}]})
+    col = col_letra(COL_ALTA)
+    guardadas = reintentar(hoja.col_values, COL_ALTA + 1)
+
+    primera = {}
+    for m in master.values():
+        f = fecha(m.get('ultima'))
+        if m['vendedor'] and f:
+            primera[m['vendedor']] = min(primera.get(m['vendedor'], f), f)
+
+    salida, faltantes = {}, []
+    for v in vendedores:
+        i = _fila_en_config(libro, v['nombre'])
+        texto = guardadas[i - 1] if i - 1 < len(guardadas) else ''
+        d = fecha(texto)
+        if not d:
+            d = primera.get(v['nombre'], hoy)
+            faltantes.append({'range': f"'{CONFIG}'!{col}{i}",
+                              'values': [[d.strftime(FORMATO_FECHA)]]})
+        salida[v['nombre']] = d
+
+    if faltantes and escribir:
+        faltantes.append({'range': f"'{CONFIG}'!{col}1",
+                          'values': [['EN EL EQUIPO DESDE']]})
+        reintentar(libro.values_batch_update,
+                   {'valueInputOption': 'RAW', 'data': faltantes})
+    return salida
+
+
+def _fila_en_config(libro, nombre):
+    """La fila de Config donde esta ese vendedor. Se cachea: son 17 llamadas
+    iguales si no."""
+    if not hasattr(_fila_en_config, 'cache'):
+        col = reintentar(libro.worksheet(CONFIG).col_values, 1)
+        _fila_en_config.cache = {n.strip(): i for i, n in enumerate(col, 1) if n.strip()}
+    return _fila_en_config.cache[nombre]
+
+
+def filas_seguimiento(master, vendedores, desde, hoy=None):
+    """Las filas de la hoja, con los que hay que mirar arriba de todo.
+
+    Logica pura sobre el master: se testea sin tocar Google.
+    """
+    hoy = hoy or date.today()
+    por_vendedor = {}
+    for m in master.values():
+        if m['vendedor']:
+            por_vendedor.setdefault(m['vendedor'], []).append(m)
+
+    datos = []
+    for v in vendedores:
+        n = v['nombre']
+        a = actividad(por_vendedor.get(n, []), desde.get(n), hoy)
+        datos.append((n, a))
+
+    # Primero los que hay que mirar, y dentro de esos el que hace mas que no
+    # vende. Los que venden quedan abajo ordenados por ventas.
+    datos.sort(key=lambda x: (not x[1]['alerta'],
+                              -(x[1]['dias_sin_vender'] or 9999) if x[1]['alerta']
+                              else -x[1]['ventas']))
+
+    marcados = [n for n, a in datos if a['alerta']]
+    if marcados:
+        aviso = f'{len(marcados)} para mirar: ' + ', '.join(marcados)
+    else:
+        # Sin esto decia "todos vendieron en el ultimo mes" con CERO ventas
+        # registradas en toda la planilla, que es lo contrario de la verdad.
+        vendieron = sum(1 for _, a in datos if a['ventas'])
+        nuevos = sum(1 for _, a in datos
+                     if a['antiguedad'] is not None and a['antiguedad'] < DIAS_SIN_VENDER)
+        aviso = (f'Ninguno para mirar: {vendieron} de {len(datos)} tienen ventas '
+                 f'registradas y {nuevos} estan dentro de su primer mes.')
+
+    filas = [['SEGUIMIENTO DEL EQUIPO'] + [''] * 9,
+             [aviso] + [''] * 9,
+             ['Una venta se cuenta cuando el vendedor marca "Cliente activo" en su '
+              'archivo: si no la marca, no aparece aca. La fecha de alta la pone '
+              'el sistema con la gestion mas vieja que encuentra, y se corrige a mano '
+              'en la columna K de Config.'] + [''] * 9,
+             COLUMNAS_SEGUIMIENTO]
+    for n, a in datos:
+        filas.append([
+            n,
+            desde[n].strftime(FORMATO_FECHA) if desde.get(n) else '—',
+            a['asignados'], a['llamados'], a['conversaciones'], a['en_el_embudo'],
+            a['ventas'],
+            a['ultima_venta'].strftime(FORMATO_FECHA) if a['ultima_venta'] else '—',
+            a['dias_sin_vender'] if a['dias_sin_vender'] is not None else '—',
+            a['situacion'],
+        ])
+    return filas, [a['alerta'] for _, a in datos]
+
+
+def _hoja_seguimiento(libro, filas, alertas):
+    """Rehace la hoja y la deja de solo lectura: son numeros calculados."""
+    from liquidar_comisiones import _proteger, _rehacer
+    hoja = _rehacer(libro, SEGUIMIENTO, filas, len(COLUMNAS_SEGUIMIENTO))
+    sid = hoja.id
+    oscuro, claro = (rgb(hex_a_rgb(c)) for c in DINERO)
+    n = len(COLUMNAS_SEGUIMIENTO)
+    encabezado = len(filas) - len(alertas)      # la fila de titulos de columna
+
+    def rango(f1, f2, c1=0, c2=n):
+        return {'sheetId': sid, 'startRowIndex': f1 - 1, 'endRowIndex': f2,
+                'startColumnIndex': c1, 'endColumnIndex': c2}
+
+    reqs = [
+        {'updateSheetProperties': {
+            'properties': {'sheetId': sid, 'tabColor': oscuro,
+                           'gridProperties': {'frozenRowCount': encabezado}},
+            'fields': 'tabColor,gridProperties.frozenRowCount'}},
+        {'mergeCells': {'range': rango(1, 1), 'mergeType': 'MERGE_ALL'}},
+        {'mergeCells': {'range': rango(2, 2), 'mergeType': 'MERGE_ALL'}},
+        {'mergeCells': {'range': rango(3, 3), 'mergeType': 'MERGE_ALL'}},
+        {'repeatCell': {
+            'range': rango(1, 1),
+            'cell': {'userEnteredFormat': {
+                'backgroundColor': oscuro,
+                'textFormat': {'bold': True, 'fontSize': 14, 'fontFamily': FUENTE,
+                               'foregroundColor': rgb(hex_a_rgb(BLANCO))}}},
+            'fields': 'userEnteredFormat(backgroundColor,textFormat)'}},
+        {'repeatCell': {
+            'range': rango(2, 2),
+            'cell': {'userEnteredFormat': {
+                'backgroundColor': claro, 'wrapStrategy': 'WRAP',
+                'textFormat': {'bold': True, 'fontSize': 10, 'foregroundColor': oscuro}}},
+            'fields': 'userEnteredFormat(backgroundColor,wrapStrategy,textFormat)'}},
+        {'repeatCell': {
+            'range': rango(3, 3),
+            'cell': {'userEnteredFormat': {
+                'wrapStrategy': 'WRAP',
+                'textFormat': {'italic': True, 'fontSize': 9,
+                               'foregroundColor': rgb(hex_a_rgb(TINTA_SUAVE))}}},
+            'fields': 'userEnteredFormat(wrapStrategy,textFormat)'}},
+        {'repeatCell': {
+            'range': rango(encabezado, encabezado),
+            'cell': {'userEnteredFormat': {
+                'backgroundColor': oscuro, 'verticalAlignment': 'MIDDLE',
+                'wrapStrategy': 'WRAP',
+                'textFormat': {'bold': True, 'fontSize': 9, 'fontFamily': FUENTE,
+                               'foregroundColor': rgb(hex_a_rgb(BLANCO))}}},
+            'fields': 'userEnteredFormat(backgroundColor,verticalAlignment,'
+                      'wrapStrategy,textFormat)'}},
+        {'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 1},
+            'properties': {'pixelSize': 170}, 'fields': 'pixelSize'}},
+        {'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'COLUMNS', 'startIndex': 1, 'endIndex': n - 1},
+            'properties': {'pixelSize': 105}, 'fields': 'pixelSize'}},
+        {'updateDimensionProperties': {
+            'range': {'sheetId': sid, 'dimension': 'COLUMNS',
+                      'startIndex': n - 1, 'endIndex': n},
+            'properties': {'pixelSize': 260}, 'fields': 'pixelSize'}},
+    ]
+
+    # Los numeros centrados, y el nombre en negrita.
+    if alertas:
+        reqs += [
+            {'repeatCell': {
+                'range': rango(encabezado + 1, len(filas), 1, n - 1),
+                'cell': {'userEnteredFormat': {'horizontalAlignment': 'CENTER'}},
+                'fields': 'userEnteredFormat.horizontalAlignment'}},
+            {'repeatCell': {
+                'range': rango(encabezado + 1, len(filas), 0, 1),
+                'cell': {'userEnteredFormat': {'textFormat': {'bold': True}}},
+                'fields': 'userEnteredFormat.textFormat.bold'}},
+        ]
+    # Fondo ambar en la fila del que hay que mirar. Se pinta por fila y no con
+    # formato condicional porque la condicion ya la calculo Python.
+    for i, marcado in enumerate(alertas):
+        if marcado:
+            reqs.append({'repeatCell': {
+                'range': rango(encabezado + 1 + i, encabezado + 1 + i),
+                'cell': {'userEnteredFormat': {
+                    'backgroundColor': rgb(hex_a_rgb('#FBF3E0'))}},
+                'fields': 'userEnteredFormat.backgroundColor'}})
+
+    reintentar(libro.batch_update, {'requests': reqs})
+    return _proteger(libro, sid, 'Seguimiento del equipo: lo calcula el sistema')
+
+
 def leads_del_excel(generado=GENERADO):
     """Todos los negocios del Excel, en el formato que espera elegir_lote."""
     df = pd.read_excel(generado, sheet_name='Todos', dtype=str).fillna('')
@@ -780,14 +992,13 @@ def main(simular=False):
         print(f'\n[SIMULACION] {len(escrituras_master)} escrituras al master, '
               f'{len(nuevas_asignaciones)} archivos a rearmar y {len(paneles)} '
               f'paneles a refrescar. No se escribio nada.')
-        return
 
-    if escrituras_master:
+    if escrituras_master and not simular:
         reintentar(libro.values_batch_update,
                    {'valueInputOption': 'RAW', 'data': escrituras_master})
         print(f'\nMaster actualizado: {len(escrituras_master)} celdas')
 
-    for v, siguen, lote, carpeta_final in nuevas_asignaciones:
+    for v, siguen, lote, carpeta_final in ([] if simular else nuevas_asignaciones):
         libro_v = reintentar(cliente.open_by_key, v['archivo'])
         hoja = _hoja_leads(libro_v)
         filas = ([COLUMNAS_VENDEDOR] +
@@ -804,10 +1015,20 @@ def main(simular=False):
         print(f"   {v['nombre']}: {len(filas) - 1} en la tanda, "
               f"{len(carpeta_final)} guardados")
 
-    for v, hoja, valores in paneles:
+    for v, hoja, valores in ([] if simular else paneles):
         reintentar(hoja.update, values=valores, range_name=f'A1:B{ALTO_PANEL}')
-    if paneles:
+    if paneles and not simular:
         print(f'   {len(paneles)} paneles actualizados')
+
+    # El reporte para el dueño, al final: necesita el master ya actualizado.
+    desde = altas(libro, vendedores, master, escribir=not simular)
+    filas_seg, alertas = filas_seguimiento(master, vendedores, desde)
+    if simular:
+        print(f'\n[SIMULACION] {SEGUIMIENTO}: {filas_seg[1][0]}')
+    else:
+        duro = _hoja_seguimiento(libro, filas_seg, alertas)
+        print(f'\n{SEGUIMIENTO}: {filas_seg[1][0]}'
+              + ('' if duro else '  (proteccion en modo aviso: falta SHEET_OWNER)'))
 
     print('\nListo.')
 
