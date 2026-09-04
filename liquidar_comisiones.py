@@ -32,19 +32,22 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 from armar_planilla import MAX_VENDEDORES
-from modules.comisiones import (ASIGNAR, COLUMNAS_ASIGNAR, COLUMNAS_LIQUIDACION,
+from modules.comisiones import (ASIGNAR, CLIENTES, COLUMNAS_ASIGNAR,
+                                COLUMNAS_CLIENTES, COLUMNAS_LIQUIDACION,
                                 COLUMNAS_REFERIDOS, COLOR_ESTADO, LIQUIDACION,
                                 REFERIDOS, RESUMEN_COMISIONES, estado_label,
-                                filas_resumen, liquidar, obtener_clientes,
-                                par_telefono_vendedor, resumen_por_vendedor,
-                                sin_vendedor, vendedor_por_cliente)
+                                filas_clientes, filas_resumen, liquidar,
+                                obtener_clientes, par_telefono_vendedor,
+                                resumen_por_vendedor, sin_vendedor,
+                                vendedor_por_cliente)
 from modules.estilo import (BLANCO, DINERO, FUENTE, FUENTE_DATOS, LINEA, TINTA,
                             TINTA_SUAVE, hex_a_rgb, rgb)
 from modules.planilla import (CLAVE, CONFIG, FILA_VENDEDORES, IDX, PANEL, RANKING,
                               RESUMEN, col_letra, reintentar, SEGUIMIENTO)
 from sincronizar_sheets import _abrir_libro, _credenciales, _sheet_id
 
-FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, SEGUIMIENTO, LIQUIDACION, REFERIDOS,
+FUERA_DE_NICHOS = (CONFIG, PANEL, RESUMEN, RANKING, SEGUIMIENTO, CLIENTES,
+                   LIQUIDACION, REFERIDOS,
                    RESUMEN_COMISIONES, ASIGNAR)
 
 # Referidos: 1 titulo, 2 ayuda, 3 encabezados, 4 en adelante los vendedores.
@@ -463,6 +466,50 @@ def _hoja_liquidacion(libro, filas):
     return h
 
 
+
+def _hoja_clientes(libro, filas, marcas):
+    """La cartera: quien esta pagando, con que numero y cuantas cuotas lleva.
+
+    Es la respuesta a "quien me esta pagando", que hasta ahora habia que sacar
+    cruzando tres hojas. Las de comision siguen existiendo aparte porque
+    contestan otra pregunta: cuanto le toca a cada vendedor.
+    """
+    h = _rehacer(libro, CLIENTES, [COLUMNAS_CLIENTES] + filas,
+                 cols=len(COLUMNAS_CLIENTES))
+    n = len(COLUMNAS_CLIENTES)
+    fmt, campos = _texto(negrita=True, color=BLANCO, fondo=DINERO[0])
+    reqs = [
+        _celda(h.id, 0, fmt, campos, col1=n),
+        {"updateSheetProperties": {
+            "properties": {"sheetId": h.id, "tabColor": rgb(hex_a_rgb(DINERO[0])),
+                           "gridProperties": {"frozenRowCount": 1}},
+            "fields": "tabColor,gridProperties.frozenRowCount"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": h.id, "dimension": "COLUMNS",
+                      "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 220}, "fields": "pixelSize"}},
+        {"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": 1,
+                      "startColumnIndex": n - 1, "endColumnIndex": n},
+            "cell": {"userEnteredFormat": {
+                "numberFormat": {"type": "CURRENCY", "pattern": '"$"#,##0'}}},
+            "fields": "userEnteredFormat.numberFormat"}},
+    ]
+    # El estado con su color, el mismo semaforo que usan las otras hojas.
+    for i, estado in enumerate(marcas):
+        fondo, letra = COLOR_ESTADO.get(estado, ((0.9, 0.9, 0.9), (0, 0, 0)))
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": h.id, "startRowIndex": i + 1, "endRowIndex": i + 2,
+                      "startColumnIndex": 2, "endColumnIndex": 3},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": rgb(fondo), "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "foregroundColor": rgb(letra)}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}})
+    reintentar(libro.batch_update, {"requests": reqs})
+    _proteger(libro, h.id, "Sale del panel de Organizate. No editar a mano.")
+    return h
+
+
 # ---------------------------------------------------------------------- main
 
 def main():
@@ -488,14 +535,19 @@ def main():
     # El telefono resuelve solo; lo que no cruza cae en la hoja de asignacion
     # manual, que es la unica forma de rescatar al cliente que se registro con
     # otro numero (o antes de que la web pidiera telefono).
-    por_telefono = vendedor_por_cliente(clientes, tel_a_vend)
+    por_telefono = vendedor_por_cliente(clientes, tel_a_vend, validos=vendedores)
     pendientes = sin_vendedor(clientes, por_telefono)
     a_mano = _hoja_asignar(libro, pendientes, vendedores)
     print(f"   {ASIGNAR}: {len(pendientes)} sin cruce por teléfono, "
           f"{len(a_mano)} ya asignados a mano")
 
-    vendedor_de = vendedor_por_cliente(clientes, tel_a_vend, a_mano)
+    vendedor_de = vendedor_por_cliente(clientes, tel_a_vend, a_mano, validos=vendedores)
     _hoja_liquidacion(libro, liquidar(clientes, vendedor_de, referido_por))
+
+    filas_cli, marcas_cli = filas_clientes(clientes, vendedor_de)
+    _hoja_clientes(libro, filas_cli, marcas_cli)
+    pagando = sum(1 for f in filas_cli if f[5])
+    print(f"   {CLIENTES}: {len(filas_cli)} negocios, {pagando} con alguna cuota paga")
 
     resumen = resumen_por_vendedor(clientes, vendedor_de, referido_por, vendedores)
     filas, marcas = filas_resumen(resumen)

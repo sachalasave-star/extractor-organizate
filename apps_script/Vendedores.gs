@@ -214,7 +214,7 @@ function _avisar(nombre, email, url) {
       '<li>Podes cambiar de rubro desde el panel, hasta la llamada 10 o cada vez que ' +
       'te entra una tanda nueva.</li>' +
       '</ul>' +
-      '<p>Se actualiza solo dos veces por dia. Guardalo en favoritos.</p>'
+      '<p>Se actualiza solo varias veces por dia. Guardalo en favoritos.</p>'
   });
 }
 

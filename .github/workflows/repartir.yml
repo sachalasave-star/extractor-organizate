@@ -2,18 +2,22 @@ name: Repartir leads
 
 # Vive aparte del scraper a proposito. Colgado de el corria dos veces por dia,
 # y el vendedor que cambiaba de rubro en su panel se quedaba hasta 12 horas
-# viendo los mismos negocios: parecia que el boton no hacia nada. Aca tarda
-# como mucho una hora.
+# viendo los mismos negocios: parecia que el boton no hacia nada.
 #
 # Ademas no depende del scraper para nada: usa el Excel que ya esta commiteado
 # en el repo. Que sea de la corrida anterior da igual, son 90 mil negocios.
 on:
   schedule:
-    - cron: '20 * * * *'      # al minuto 20, lejos del scraper que arranca en punto
+    # Pedia una corrida por hora y GitHub daba 6 por dia: en los crons
+    # programados de repos publicos las corridas se descartan cuando hay cola, y
+    # cuanto mas denso el cron mas se descarta. Con 8 pedidos entran casi todos y
+    # el hueco real queda en unas 3 horas. Eso es lo que promete el panel ahora.
+    - cron: '20 */3 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: repartir             # dos repartos juntos se pisarian las asignaciones
+  group: planilla             # compartido con "Planilla al dia": los dos escriben
+                            # en el master y encolar sale mas barato que depurar
   cancel-in-progress: false
 
 jobs:

@@ -1,0 +1,53 @@
+name: Planilla al dia
+
+# Estos dos pasos vivian adentro de "Scrapear". El 28/8 ese workflow se apago a
+# mano y se los llevo puestos sin que nadie se enterara: al master no entro un
+# negocio nuevo en seis dias y las hojas de plata quedaron congeladas, mientras
+# los vendedores seguian recibiendo leads como si nada (repartir_leads.py usa el
+# Excel commiteado, no la planilla). Vivir colgados de otro workflow era la
+# causa; ahora corren solos.
+#
+# Ninguno de los dos necesita al scraper:
+#   - sincronizar_sheets.py lee el Excel que ya esta en el repo
+#   - liquidar_comisiones.py lee el endpoint de Organizate
+on:
+  schedule:
+    # Una vez por dia, 06:40 hora Argentina. Mas seguido no sirve: el Excel solo
+    # cambia cuando corre el scraper, y los pagos de Mercado Pago son mensuales.
+    - cron: '40 9 * * *'
+  workflow_dispatch:
+
+concurrency:
+  # El mismo grupo que "Repartir leads": los dos escriben en el master y no
+  # conviene que se pisen. Encolar es mas barato que depurar una fila mezclada.
+  group: planilla
+  cancel-in-progress: false
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Mandar los negocios nuevos a Google Sheets
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python sincronizar_sheets.py
+
+      - name: Liquidar comisiones
+        if: always()          # que una falla del sync no tape el estado de la plata
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          ORGANIZATE_TOKEN: ${{ secrets.ORGANIZATE_TOKEN }}
+          SHEET_OWNER: ${{ secrets.SHEET_OWNER }}
+        run: python liquidar_comisiones.py

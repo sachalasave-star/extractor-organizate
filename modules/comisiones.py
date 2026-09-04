@@ -25,6 +25,7 @@ PCT_ORGANIZATE = 0.30
 LIQUIDACION = '💰 Liquidación'
 REFERIDOS = '🤝 Referidos'
 RESUMEN_COMISIONES = '💵 Comisiones por vendedor'
+CLIENTES = '💳 Clientes de Organizate'
 
 COLUMNAS_LIQUIDACION = ['Cliente', 'Negocio', 'Teléfono', 'Período', 'Monto',
                         'Vendedor', 'Comisión vendedor', 'Referido por',
@@ -134,25 +135,41 @@ def corte(fecha_alta):
     return 15 if dia <= 15 else 30
 
 
-def vendedor_por_cliente(clientes, telefono_a_vendedor, a_mano=None):
-    """{id de cliente: vendedor}, resolviendo por telefono y, si no cruza, por
-    lo asignado a mano.
+def vendedor_por_cliente(clientes, telefono_a_vendedor, a_mano=None,
+                         validos=None):
+    """{id de cliente: vendedor}. Tres escalones, en este orden.
+
+      1. `vendedor` que devuelve el endpoint. Es el unico dato de primera mano:
+         lo carga la web en el momento de la venta, no lo deduce nadie. Si
+         viene, gana.
+      2. El cruce por telefono contra el master.
+      3. La hoja de asignacion a mano.
 
     El telefono nunca va a cruzar el 100%: un negocio se registra con el
     celular del dueño y en Maps figura el fijo del local, o se registro antes
-    de que la web pidiera telefono (los 9 primeros clientes de Organizate
-    estan en ese caso y ya no tiene arreglo). Para esos existe la hoja de
-    asignacion manual.
+    de que la web pidiera telefono (los primeros clientes de Organizate estan
+    en ese caso y ya no tiene arreglo).
+
+    `validos` son los vendedores que existen en Config. Se pide porque el
+    endpoint lo escribe gente: un nombre mal tipeado o el de alguien que ya no
+    esta pagaria una comision a nadie, y en silencio. Un vendedor que no esta
+    en la lista se ignora y el cliente baja al escalon siguiente, que termina
+    en la hoja de asignacion a mano.
 
     La asignacion a mano se guarda contra el ID del cliente, no contra el
     nombre: el nombre lo puede editar el dueño del negocio cuando quiera y ahi
     se perderia la asignacion.
     """
     a_mano = a_mano or {}
+    conocidos = {v.strip().lower(): v.strip() for v in (validos or []) if v.strip()}
     salida = {}
     for c in clientes:
         cid = c.get('id', '')
-        vendedor = (telefono_a_vendedor.get(canonico(c.get('telefono', '')))
+        del_endpoint = (c.get('vendedor') or '').strip()
+        if del_endpoint and conocidos:
+            del_endpoint = conocidos.get(del_endpoint.lower(), '')
+        vendedor = (del_endpoint
+                    or telefono_a_vendedor.get(canonico(c.get('telefono', '')))
                     or a_mano.get(cid, ''))
         if cid and vendedor:
             salida[cid] = vendedor
@@ -302,6 +319,75 @@ def filas_resumen(resumen):
         poner([f'TOTAL {v.upper()}', '', '', info['total']], 'total')
 
     return filas, marcas
+
+
+COLUMNAS_CLIENTES = ['Negocio', 'Teléfono', 'Estado', 'Alta', 'Vendedor',
+                     'Cuotas pagadas', 'Último pago', 'Total cobrado']
+
+
+def filas_clientes(clientes, vendedor_de):
+    """Una fila por cliente de Organizate, del que mas paga al que menos.
+
+    Logica pura: se testea sin tocar Google ni el endpoint.
+
+    Las cuentas internas quedan afuera. Son las de prueba de los vendedores,
+    para grabar los videos: no son negocios que pagan y contarlas como clientes
+    inflaria el numero justo donde se mira si el negocio funciona.
+    """
+    filas, marcas = [], []
+    datos = []
+    for c in sin_cuentas_internas(clientes):
+        pagos = c.get('pagos') or []
+        montos = [_monto(p) for p in pagos]
+        fechas = sorted(f for f in (_fecha_pago(p) for p in pagos) if f)
+        datos.append({
+            'negocio': (c.get('negocio') or '').strip() or '(sin nombre)',
+            'telefono': (c.get('telefono') or '').strip() or '—',
+            'estado': estado_label(c.get('estado')),
+            'alta': _dia(c.get('alta')),
+            'vendedor': vendedor_de.get(c.get('id', ''), '—'),
+            'cuotas': len(pagos),
+            'ultimo': max(fechas).strftime('%d/%m/%Y') if fechas else '—',
+            'total': sum(montos),
+        })
+
+    # Primero el que mas plata trajo; entre los que no pagaron nada, el activo
+    # antes que el que se fue.
+    orden = {'Activo': 0, 'Demo': 1, 'Cancelado': 2, 'Abandonado': 3}
+    datos.sort(key=lambda d: (-d['total'], -d['cuotas'],
+                              orden.get(d['estado'], 9), d['negocio']))
+
+    for d in datos:
+        filas.append([d['negocio'], d['telefono'], d['estado'], d['alta'],
+                      d['vendedor'], d['cuotas'], d['ultimo'],
+                      d['total'] or ''])
+        marcas.append(d['estado'])
+    return filas, marcas
+
+
+def _monto(pago):
+    try:
+        return float(pago.get('monto') or pago.get('amount') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fecha_pago(pago):
+    for campo in ('fecha', 'fecha_pago', 'date', 'created_at'):
+        crudo = pago.get(campo)
+        if crudo:
+            try:
+                return datetime.fromisoformat(str(crudo).replace('Z', '+00:00')).date()
+            except ValueError:
+                pass
+    return None
+
+
+def _dia(iso):
+    try:
+        return datetime.fromisoformat(str(iso).replace('Z', '+00:00')).strftime('%d/%m/%Y')
+    except (TypeError, ValueError):
+        return '—'
 
 
 def demo():
@@ -494,6 +580,66 @@ def demo():
     gana = vendedor_por_cliente(con_tel, {canonico('3413539510'): 'Augusto'},
                                 {'uuid-3': 'Marto'})
     assert gana == {'uuid-3': 'Augusto'}, gana
+    # --- los tres escalones -------------------------------------------------
+    # 1. Lo que dice el endpoint gana sobre el cruce por telefono: lo carga la
+    #    web cuando se hace la venta, no lo deduce nadie.
+    cs = [{'id': 'c1', 'negocio': 'Barberia A', 'telefono': '0341 353-9510',
+           'vendedor': 'Marto', 'estado': 'activo', 'pagos': []}]
+    tel = {canonico('03413539510'): 'Gige'}
+    assert vendedor_por_cliente(cs, tel, validos=['Marto', 'Gige']) == {'c1': 'Marto'}
+
+    # 2. Sin vendedor en el endpoint, manda el telefono.
+    cs[0]['vendedor'] = None
+    assert vendedor_por_cliente(cs, tel, validos=['Marto', 'Gige']) == {'c1': 'Gige'}
+
+    # 3. Sin telefono que cruce, la hoja de asignacion a mano.
+    assert vendedor_por_cliente([{'id': 'c2', 'telefono': None}], tel,
+                                a_mano={'c2': 'Tomas'}, validos=['Tomas']) == {'c2': 'Tomas'}
+
+    # Un vendedor que no esta en Config se ignora y el cliente baja de escalon.
+    # Si no, un nombre mal tipeado en la web le pagaria comision a nadie y en
+    # silencio, que es la peor forma de perder plata.
+    cs[0]['vendedor'] = 'Martoo'
+    assert vendedor_por_cliente(cs, tel, validos=['Marto', 'Gige']) == {'c1': 'Gige'}
+
+    # Sin lista de validos no se puede chequear nada, asi que se confia.
+    assert vendedor_por_cliente(cs, {}) == {'c1': 'Martoo'}
+
+    # Mayusculas y espacios no tienen que romper el cruce.
+    cs[0]['vendedor'] = '  marto '
+    assert vendedor_por_cliente(cs, tel, validos=['Marto']) == {'c1': 'Marto'}
+    # --- la tabla de quien esta pagando -------------------------------------
+    cartera = [
+        {'id': 'p1', 'negocio': 'Pestañas ROSARIO', 'telefono': '0341 111-1111',
+         'estado': 'activo', 'alta': '2026-07-01T10:00:00+00:00', 'es_cuenta_interna': False,
+         'pagos': [{'monto': 25000, 'fecha': '2026-07-05T10:00:00+00:00'},
+                   {'monto': 25000, 'fecha': '2026-08-05T10:00:00+00:00'}]},
+        {'id': 'p2', 'negocio': 'Spa Sin Pagos', 'telefono': None, 'estado': 'activo',
+         'alta': '2026-08-20T10:00:00+00:00', 'es_cuenta_interna': False, 'pagos': []},
+        {'id': 'p3', 'negocio': 'Se Fue', 'telefono': '011 2222-2222',
+         'estado': 'abandonado', 'alta': '2026-06-01T10:00:00+00:00',
+         'es_cuenta_interna': False, 'pagos': []},
+        {'id': 'p4', 'negocio': 'Prueba de Tomas', 'telefono': '', 'estado': 'activo',
+         'alta': '2026-08-01T10:00:00+00:00', 'es_cuenta_interna': True, 'pagos': []},
+    ]
+    fs, ms = filas_clientes(cartera, {'p1': 'Marto'})
+
+    assert len(fs) == 3, 'la cuenta interna no es un cliente que paga'
+    assert [f[0] for f in fs] == ['Pestañas ROSARIO', 'Spa Sin Pagos', 'Se Fue'], fs
+    assert fs[0][1] == '0341 111-1111' and fs[0][2] == 'Activo'
+    assert fs[0][4] == 'Marto' and fs[0][5] == 2, fs[0]
+    assert fs[0][6] == '05/08/2026', fs[0][6]
+    assert fs[0][7] == 50000, fs[0][7]
+    # El que nunca pago no muestra un cero disfrazado de cobro.
+    assert fs[1][5] == 0 and fs[1][6] == '—' and fs[1][7] == ''
+    # Sin telefono se ve que falta, no una celda vacia que parece un bug.
+    assert fs[1][1] == '—'
+    # Entre los que no pagaron nada, el activo antes que el que se fue.
+    assert ms == ['Activo', 'Activo', 'Abandonado'], ms
+    print('OK  filas_clientes: quien paga, cuantas cuotas y quien lo vendio')
+
+    print('OK  vendedor_por_cliente: endpoint, telefono y a mano, en ese orden')
+
     print('OK  asignacion a mano: rescata al cliente sin telefono, y el telefono manda')
 
 

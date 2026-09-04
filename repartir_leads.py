@@ -25,7 +25,7 @@ Necesita GOOGLE_CREDENTIALS y SHEET_ID, igual que el resto del pipeline.
 """
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -290,7 +290,7 @@ def mensaje_filtro(pedido, logrado, conseguidos, puede, motivo, repone):
     pn, pc = pedido
     if (not pn or pn == ln) and (not pc or pc == lc):
         return (ahora + ' Podes cambiar el rubro y la ciudad hasta la llamada 10, y otra '
-                'vez cada vez que te entra una tanda nueva. Tarda hasta una hora en '
+                'vez cada vez que te entra una tanda nueva. Tarda unas horas en '
                 'aplicarse, no es al instante.')
     if conseguidos:
         return (ahora + f' Solo quedaban {conseguidos} de {_frase(pedido)}, asi que te '
@@ -327,7 +327,7 @@ def filas_panel(nombre, pedido, res, guardados, aviso_filtro, aviso_proximo):
     """
     return [
         [f'Panel de {nombre}', ''],
-        ['Se actualiza solo cada hora. Vos elegis el rubro y la ciudad.' +
+        ['Se actualiza solo varias veces por dia. Vos elegis el rubro y la ciudad.' +
          (f' Tenes {guardados} guardados en la pestaña {HOJA_CALIFICADOS}.'
           if guardados else ''), ''],
         ['', ''],
@@ -494,6 +494,10 @@ def _hoja_calificados(libro, crear=True):
         return None, False
     hoja = reintentar(libro.add_worksheet, title=HOJA_CALIFICADOS, rows=300,
                       cols=len(COLUMNAS_VENDEDOR), index=2)
+    # El encabezado va aca y no cuando se rearma el archivo: si no, la carpeta
+    # del vendedor que todavia no repuso queda en blanco, sin titulos ni nada
+    # que explique para que es esa pestaña.
+    reintentar(hoja.update, values=[COLUMNAS_VENDEDOR], range_name='A1')
     return hoja, True
 
 
@@ -1079,6 +1083,59 @@ def demo():
     _, carpeta = repartir_por_hoja([], [{'clave': 'x', 'estado': 'No interesado'}])
     assert carpeta == [], carpeta
     print('OK  repartir_por_hoja: la carpeta acumula, no duplica y suelta a los que dijeron que no')
+
+    # --- orden de la hoja de seguimiento ------------------------------------
+    def _m(nombre, estado='Sin contactar', motivo='', ultima=''):
+        return {'vendedor': nombre, 'estado': estado, 'motivo': motivo, 'ultima': ultima}
+
+    hoy = date(2026, 9, 4)
+    hace = lambda d: (hoy - timedelta(days=d)).strftime(FORMATO_FECHA)
+    entro = hoy - timedelta(days=300)
+
+    master = {}
+    def cargar(clave, *filas):
+        for i, f in enumerate(filas):
+            master[f'{clave}{i}'] = f
+
+    # Vendio hace 3 dias: no se marca.
+    cargar('ok', _m('Vende', 'Cliente activo', '', hace(3)))
+    # Vendio, pero hace 90: se marca, y es el peor de los que vendieron.
+    cargar('frio', _m('Frio', 'Cliente activo', '', hace(90)))
+    # Vendio hace 40: se marca, pero menos grave que Frio.
+    cargar('tibio', _m('Tibio', 'Cliente activo', '', hace(40)))
+    # Nunca vendio y no llamo a nadie: se marca, y va antes que los que vendieron
+    # alguna vez porque no tiene fecha (el orden usa 9999).
+    cargar('nada', _m('Dormido'), _m('Dormido'))
+    # Vendio dos veces, la ultima hace 3 dias: abajo, ordenado por ventas.
+    cargar('crack', _m('Crack', 'Cliente activo', '', hace(3)),
+           _m('Crack', 'Cliente activo', '', hace(10)))
+
+    vends = [{'nombre': n} for n in ('Vende', 'Frio', 'Tibio', 'Dormido', 'Crack')]
+    desde = {v['nombre']: entro for v in vends}
+    filas, alertas = filas_seguimiento(master, vends, desde, hoy)
+
+    encabezado = len(filas) - len(alertas)
+    orden = [f[0] for f in filas[encabezado:]]
+    assert orden == ['Dormido', 'Frio', 'Tibio', 'Crack', 'Vende'], orden
+    assert alertas == [True, True, True, False, False], alertas
+    # Los marcados arriba, y adentro de esos el que hace mas que no vende.
+    assert alertas[:3] == [True] * 3 and not any(alertas[3:])
+    # Entre los que estan bien, primero el que mas vendio.
+    assert orden[3] == 'Crack', 'el de 2 ventas tiene que ir antes que el de 1'
+    print('OK  filas_seguimiento: los marcados arriba, el mas frio primero')
+
+    # El aviso nombra a los marcados, y no miente cuando no hay ninguno.
+    assert filas[1][0].startswith('3 para mirar: Dormido, Frio, Tibio'), filas[1][0]
+    solos = [{'nombre': 'Vende'}]
+    sin_marcas, _ = filas_seguimiento({k: v for k, v in master.items() if v['vendedor'] == 'Vende'},
+                                      solos, {'Vende': entro}, hoy)
+    assert sin_marcas[1][0].startswith('Ninguno para mirar: 1 de 1'), sin_marcas[1][0]
+
+    # El recien entrado sin ventas no se marca, aunque no haya hecho nada.
+    nuevos, marcas_n = filas_seguimiento({'x': _m('Novato')}, [{'nombre': 'Novato'}],
+                                         {'Novato': hoy - timedelta(days=2)}, hoy)
+    assert marcas_n == [False] and 'Arrancando' in nuevos[-1][-1], nuevos[-1]
+    print('OK  filas_seguimiento: el aviso dice la verdad y el novato no se marca')
 
     # --- el panel -----------------------------------------------------------
     por_clave = {'aaa': {'nicho': 'Peluquerías'}, 'bbb': {'nicho': 'Peluquerías'},
